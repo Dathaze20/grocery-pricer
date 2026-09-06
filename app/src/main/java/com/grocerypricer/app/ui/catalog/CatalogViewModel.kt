@@ -40,7 +40,7 @@ class CatalogViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     suspend fun buildCatalogCsv(): Pair<String, String> =
-        CsvExporter.catalogFileName() to CsvExporter.catalogCsv(container.productRepository.getAll())
+        CsvExporter.catalogFileName() to CsvExporter.catalogCsvForFile(container.productRepository.getAll())
 
     fun observeProduct(productId: Long) = container.productRepository.observeById(productId)
 

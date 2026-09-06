@@ -104,7 +104,7 @@ class ScanViewModel(
         val rules = container.pricingRulesRepository.current()
         val product = item.productId?.let { container.productRepository.getById(it) }
         val suggestion = PricingEngine(rules).suggest(
-            unitCost = item.cost.trueUnitCost.takeIf { it.isPositive },
+            unitCost = item.cost.trueUnitCost,
             category = item.category,
             previousRetailPrice = product?.lastRetailPrice,
             productOverridePrice = product?.overridePrice,

@@ -56,11 +56,19 @@ object CsvExporter {
         "Quantity On Hand",
     )
 
+    /** The exact document, without a byte-order mark. Used by tests and by callers that parse it. */
     fun orderCsv(order: Order, items: List<OrderItem>): String =
         CsvWriter.build(ORDER_HEADER, items.map { it.toRow() })
 
     fun catalogCsv(products: List<Product>): String =
         CsvWriter.build(CATALOG_HEADER, products.map { it.toRow() })
+
+    /** What gets written to the file the user picked: BOM-prefixed so spreadsheets read UTF-8. */
+    fun orderCsvForFile(order: Order, items: List<OrderItem>): String =
+        CsvWriter.buildForSpreadsheet(ORDER_HEADER, items.map { it.toRow() })
+
+    fun catalogCsvForFile(products: List<Product>): String =
+        CsvWriter.buildForSpreadsheet(CATALOG_HEADER, products.map { it.toRow() })
 
     fun orderFileName(order: Order): String =
         "grocery-pricer-order-${order.id}-${safe(order.name)}.csv"

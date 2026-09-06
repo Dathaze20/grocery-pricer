@@ -142,6 +142,73 @@ class BackupManagerTest {
     }
 
     @Test
+    fun `a backup of an empty database restores cleanly instead of failing`() = runBlocking {
+        val backup = backupManager.createBackup(includeImages = false)
+
+        val result = backupManager.restore(backup)
+
+        assertTrue(result is RestoreResult.Success)
+        result as RestoreResult.Success
+        assertEquals(0, result.products)
+        assertEquals(0, result.orders)
+        assertTrue(database.productDao().getAll().isEmpty())
+    }
+
+    @Test
+    fun `restoring over an existing catalogue replaces it rather than merging duplicates`() = runBlocking {
+        seed()
+        val backup = backupManager.createBackup(includeImages = false)
+
+        // The same backup restored twice must not leave two copies of every product.
+        backupManager.restore(backup)
+        backupManager.restore(backup)
+
+        assertEquals(1, database.productDao().getAll().size)
+        assertEquals(1, database.orderDao().getAll().size)
+        assertEquals(1, database.orderItemDao().getAll().size)
+        assertEquals(1, database.priceHistoryDao().getAll().size)
+    }
+
+    @Test
+    fun `restoring an empty backup over real data is still a deliberate, complete replacement`() = runBlocking {
+        val emptyBackup = backupManager.createBackup(includeImages = false)
+        seed()
+        assertEquals(1, database.productDao().getAll().size)
+
+        val result = backupManager.restore(emptyBackup)
+
+        // Destructive by design - the screen warns first - but it must be all or nothing,
+        // never a half-applied mixture of the backup and what was there before.
+        assertTrue(result is RestoreResult.Success)
+        assertTrue(database.productDao().getAll().isEmpty())
+        assertTrue(database.orderItemDao().getAll().isEmpty())
+    }
+
+    @Test
+    fun `a backup with no format version is refused rather than guessed at`() = runBlocking {
+        seed()
+        val noVersion = JSONObject().put("format", BackupManager.FORMAT).toString()
+
+        val result = backupManager.restore(noVersion)
+
+        assertTrue(result is RestoreResult.Failure)
+        assertTrue((result as RestoreResult.Failure).message.contains("version"))
+        assertEquals(1, database.productDao().getAll().size)
+    }
+
+    @Test
+    fun `a truncated backup does not wipe the database on the way to failing`() = runBlocking {
+        seed()
+        val truncated = backupManager.createBackup(includeImages = false).take(200)
+
+        val result = backupManager.restore(truncated)
+
+        assertTrue(result is RestoreResult.Failure)
+        assertEquals(1, database.productDao().getAll().size)
+        assertEquals(1, database.orderItemDao().getAll().size)
+    }
+
+    @Test
     fun `settings are carried in the backup`() = runBlocking {
         val json = JSONObject(backupManager.createBackup(includeImages = false))
         val settings = json.getJSONObject("settings")

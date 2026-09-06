@@ -59,6 +59,55 @@ jobs:
           } | sed "s|$GITHUB_WORKSPACE/||g" | sort -u | head -200 | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      # The privacy claim in the README is only worth something if it can be checked against
+      # the APK that was actually built, dependencies and all.
+      - name: Check the exported Room schema is committed
+        if: always()
+        run: |
+          # exportSchema = true is only worth anything if the JSON it produces is in
+          # the repository: a future version 2 migration is tested against the version 1
+          # schema, and there is nothing to test against if it was never committed.
+          shopt -s nullglob
+          GENERATED=(app/schemas/*/*.json)
+          if [ ${#GENERATED[@]} -eq 0 ]; then
+            echo "No schema JSON was generated - the Room annotation processor did not run."
+            exit 0
+          fi
+          MISSING=0
+          for f in "${GENERATED[@]}"; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              if ! git diff --quiet -- "$f"; then
+                echo "::warning file=$f::The exported Room schema changed. Commit the new version."
+                MISSING=1
+              fi
+            else
+              echo "::warning file=$f::Room exported this schema but it is not committed. Run the build locally and commit it before writing a migration."
+              MISSING=1
+            fi
+          done
+          if [ "$MISSING" -eq 0 ]; then
+            echo "Exported Room schema matches what is committed."
+          else
+            {
+              echo "### Room schema"
+              echo ""
+              echo "The exported schema under \`app/schemas/\` is missing from the repository or out of date."
+              echo "It is attached to the **Grocery-Pricer-reports** artifact - commit it before writing a migration."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Report merged manifest permissions
+        run: |
+          MANIFEST=$(find app/build/intermediates -name AndroidManifest.xml -path '*debug*' | head -1)
+          {
+            echo "### Permissions in the merged manifest"
+            echo ""
+            echo '```'
+            grep -oE 'android:name="android\.permission\.[A-Z_]+"' "$MANIFEST" \
+              | sed 's/android:name="//;s/"//' | sort -u
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Name the APK for humans
         run: |
           mkdir -p artifacts
@@ -94,5 +143,6 @@ jobs:
             core/build/reports/tests/
             app/build/reports/tests/
             app/build/reports/lint-results-debug.html
+            app/schemas/
           if-no-files-found: ignore
           retention-days: 14

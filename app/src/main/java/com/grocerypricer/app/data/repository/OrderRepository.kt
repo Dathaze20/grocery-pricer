@@ -190,7 +190,9 @@ class OrderRepository(
         val product = (match as? MatchOutcome.Confident)?.match?.product as? Product
 
         val suggestion = engine.suggest(
-            unitCost = cost.trueUnitCost.takeIf { it.isPositive },
+            // Null only when no case price was read at all. A zero cost that was genuinely
+            // printed is a real cost and still deserves a suggested price.
+            unitCost = if (parsed.casePrice != null) cost.trueUnitCost else null,
             category = parsed.category,
             previousRetailPrice = product?.lastRetailPrice,
             productOverridePrice = product?.overridePrice,
@@ -264,7 +266,7 @@ class OrderRepository(
         )
         val product = item.productId?.let { productRepository.getById(it) }
         val suggestion = PricingEngine(rules).suggest(
-            unitCost = cost.trueUnitCost.takeIf { it.isPositive },
+            unitCost = cost.trueUnitCost,
             category = item.category,
             previousRetailPrice = product?.lastRetailPrice,
             productOverridePrice = product?.overridePrice,

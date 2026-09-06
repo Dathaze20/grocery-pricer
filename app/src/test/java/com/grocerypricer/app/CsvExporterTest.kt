@@ -68,6 +68,19 @@ class CsvExporterTest {
     }
 
     @Test
+    fun `the file written to disk carries a UTF-8 mark so spreadsheets read it correctly`() {
+        val order = TestFactories.order()
+        val items = listOf(TestFactories.mayonnaise())
+
+        val plain = CsvExporter.orderCsv(order, items)
+        val forFile = CsvExporter.orderCsvForFile(order, items)
+
+        assertTrue(forFile.startsWith("\uFEFF"))
+        assertEquals(plain, forFile.removePrefix("\uFEFF"))
+        assertTrue(CsvExporter.catalogCsvForFile(listOf(TestFactories.product())).startsWith("\uFEFF"))
+    }
+
+    @Test
     fun `file names are safe to write to disk`() {
         val name = CsvExporter.orderFileName(TestFactories.order())
         assertTrue(name.endsWith(".csv"))
