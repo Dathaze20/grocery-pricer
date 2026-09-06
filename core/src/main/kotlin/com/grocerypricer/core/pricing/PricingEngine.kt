@@ -29,7 +29,9 @@ class PricingEngine(private val rules: PricingRules = PricingRules()) {
         previousRetailPrice: Money? = null,
         productOverridePrice: Money? = null,
     ): PricingSuggestion {
-        if (unitCost == null || !unitCost.isPositive) {
+        // A cost of exactly zero is a known cost (a fully discounted case), not a missing one.
+        // Only null - nothing was read - means the price cannot be worked out.
+        if (unitCost == null || unitCost.isNegative) {
             val fallback = productOverridePrice ?: previousRetailPrice ?: Money.ZERO
             return PricingSuggestion(
                 suggestedPrice = fallback,
