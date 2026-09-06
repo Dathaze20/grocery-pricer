@@ -71,7 +71,7 @@ jobs:
             grep -oE 'android:name="android\.permission\.[A-Z_]+"' "$MANIFEST" \
               | sed 's/android:name="//;s/"//' | sort -u
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Name the APK for humans
         run: |
