@@ -46,6 +46,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -138,7 +140,12 @@ fun ScanScreen(
                 },
                 actions = {
                     Text("Camera mode", style = MaterialTheme.typography.bodySmall)
-                    Switch(checked = cameraMode, onCheckedChange = { cameraMode = it })
+                    Switch(
+                        checked = cameraMode,
+                        onCheckedChange = { cameraMode = it },
+                        // The adjacent label is a separate node, so the switch needs its own.
+                        modifier = Modifier.semantics { contentDescription = "Camera mode" },
+                    )
                     IconButton(onClick = { viewModel.openSearch() }) {
                         Icon(Icons.Default.Search, contentDescription = "Search")
                     }

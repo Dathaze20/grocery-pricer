@@ -66,16 +66,6 @@ the arithmetic, shows its working, and gets out of the way.
 
 ---
 
-## Screenshots
-
-_Screenshots go here._
-
-| Home | Review | Pricing |
-| --- | --- | --- |
-| _dashboard_ | _receipt review cards_ | _scan result with cost and suggested price_ |
-
----
-
 ## How receipt scanning works
 
 1. **Capture.** Photos are copied into the app's own storage, so the original is still there months
@@ -147,6 +137,12 @@ The ladder ships with these starting tiers, all editable in **Pricing rules**:
 The tier decides the target price first; the price ending is applied afterwards. That is why `$5.16`
 becomes `$5.99` rather than being rounded to the nearest `.99`.
 
+The ranges above are printed to the cent, but a true unit cost is a case price divided by a pack
+count and rarely lands on one — `$1.2450` is an ordinary result. The ladder is therefore read as
+contiguous bands: a cost belongs to the last tier that starts at or below it, so nothing falls
+through the gap between `$1.24` and `$1.25`. Only a cost above the top of the ladder uses the
+markup rule.
+
 Profit is always reported three ways, and margin is never labelled markup:
 
 ```
@@ -166,9 +162,14 @@ of ten-thousandths of a dollar. No floating point touches a price.
 - Receipt photos, product photos, costs and prices stay on the device.
 - Nothing is uploaded. There is no analytics, no crash reporting, no account, and no server.
 - Text recognition and barcode scanning run entirely on the phone; the models are bundled in the APK.
-- The only permission requested is `CAMERA`, and only when you first open the scanner. Gallery
-  imports use the Android photo picker and exports use the Storage Access Framework, so no storage
-  permission is needed.
+- Two permissions are declared, and no others. `CAMERA` is requested at runtime, only when you
+  first open the scanner. `VIBRATE` is a normal permission that needs no prompt; it is used solely
+  for the buzz confirming a barcode scan, and can be switched off in Settings.
+- **The app declares no `INTERNET` permission of its own.** Every CI run prints the merged
+  manifest's permission list into the build summary, so this claim can be checked against the APK
+  that was actually produced rather than taken on trust.
+- Gallery imports use the Android photo picker and exports use the Storage Access Framework, so no
+  storage permission is needed either.
 - Data leaves the device only when *you* export a CSV or a backup to a location you choose.
 
 ---
@@ -234,6 +235,8 @@ Kotlin - Jetpack Compose - Material 3 - MVVM - Room - DataStore - CameraX - ML K
 ML Kit Barcode Scanning - Coroutines and Flow - Navigation Compose - Android Photo Picker - Storage
 Access Framework.
 
+- `versionName` 1.0.0, `versionCode` 1 — both in `app/build.gradle.kts`. Raise `versionCode` on
+  every release you distribute; Android uses it, not `versionName`, to decide what is an upgrade.
 - `minSdk` 26 (Android 8.0), `targetSdk`/`compileSdk` 35
 - Java 17 toolchain, Kotlin 2.0, AGP 8.7, Gradle 8.11
 - No Firebase, no server, no accounts, no secrets in the APK
@@ -259,8 +262,14 @@ In Android Studio, use **File -> Open** and select this repository's root folder
 ./gradlew :core:test                          # pricing, parsing and matching only
 ```
 
-`:core:test` is plain JVM and runs without the Android SDK installed at all, which makes it a fast
-way to work on the pricing and parsing logic.
+**160 unit tests: 123 in `core`, 37 in `app`.** `:core:test` is plain JVM and runs without the
+Android SDK installed at all, which makes it a fast way to work on the pricing and parsing logic.
+The `app` tests use Robolectric to exercise the real Room database and the backup round-trip.
+
+The suite deliberately concentrates on what costs money if it is wrong: exact decimal arithmetic,
+every discount scope, true unit cost, the cost ladder and its boundaries, price endings, margin
+versus markup, receipt parsing and OCR correction, duplicate and photo-overlap detection, product
+matching, CSV output, database writes, and backup restore.
 
 ## Building an APK
 
@@ -276,6 +285,9 @@ Android Lint, builds the debug APK, and uploads it.
 
 To download the APK: **GitHub -> Actions -> a successful "Android" run -> Artifacts ->
 `Grocery-Pricer-Android-debug`**. Test and lint reports are uploaded as `Grocery-Pricer-reports`.
+
+A failing unit test or an error-severity lint finding fails the run, so no APK is published from a
+build that did not pass.
 
 `.github/workflows/release.yml` builds a signed release APK, and only does anything
 when release signing secrets are configured on the repository. No signing material is committed.
@@ -308,8 +320,8 @@ and does not need Play Store distribution.
   no sales deduction, because there is no POS integration.
 - **No automated UI tests.** Coverage is on the calculation, parsing, matching, database and backup
   layers; the Compose screens are not instrumented.
-- **Android Lint does not gate the build.** It runs and its report is uploaded on every CI run, but a
-  warning does not fail the APK build.
+- **Android Lint gates on errors only.** Error-severity findings fail CI; warnings are reported and
+  uploaded but do not block a release.
 - **Release builds are unsigned unless you supply a keystore**, and the release workflow skips
   itself when no signing secrets are present.
 
