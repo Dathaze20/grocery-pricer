@@ -162,12 +162,17 @@ of ten-thousandths of a dollar. No floating point touches a price.
 - Receipt photos, product photos, costs and prices stay on the device.
 - Nothing is uploaded. There is no analytics, no crash reporting, no account, and no server.
 - Text recognition and barcode scanning run entirely on the phone; the models are bundled in the APK.
-- Two permissions are declared, and no others. `CAMERA` is requested at runtime, only when you
-  first open the scanner. `VIBRATE` is a normal permission that needs no prompt; it is used solely
-  for the buzz confirming a barcode scan, and can be switched off in Settings.
-- **The app declares no `INTERNET` permission of its own.** Every CI run prints the merged
-  manifest's permission list into the build summary, so this claim can be checked against the APK
-  that was actually produced rather than taken on trust.
+- This app's own manifest declares exactly two permissions. `CAMERA` is requested at runtime, only
+  when you first open the scanner. `VIBRATE` is a normal permission that needs no prompt; it is used
+  solely for the buzz confirming a barcode scan, and can be switched off in Settings.
+- The installed APK, however, holds **four** permissions. The ML Kit libraries add `INTERNET` and
+  `ACCESS_NETWORK_STATE` to the merged manifest, and the manifest merger cannot be talked out of it
+  without removing the scanner. Both are normal permissions with no prompt, and this app never opens
+  a socket: text recognition and barcode scanning use the models bundled in the APK, and there is no
+  networking code, no HTTP client, and no analytics or crash-reporting SDK anywhere in the project.
+- Rather than ask you to take that on trust, every CI run greps the *merged* manifest and prints the
+  permission list into the build log and the run summary, so what the APK actually asks for is on
+  the record next to the APK itself.
 - Gallery imports use the Android photo picker and exports use the Storage Access Framework, so no
   storage permission is needed either.
 - Data leaves the device only when *you* export a CSV or a backup to a location you choose.
