@@ -222,6 +222,11 @@ Deliberate design decisions:
   shows what was actually paid after the catalogue moves on.
 - **Price history is append-only** and Room migrations are real - destructive migration is never
   enabled.
+- **The database schema is exported** to `app/schemas/`, so a version 2 migration can be tested
+  against the exact version 1 it has to upgrade. The version 1 JSON is not in the repository yet: it
+  is produced by the Android build, which needs the SDK, and it has only ever been generated on CI.
+  Every run attaches it to the **Grocery-Pricer-reports** artifact and warns if it is missing or
+  stale, so it can be committed before anyone writes that migration.
 
 ### Future-proofing
 
