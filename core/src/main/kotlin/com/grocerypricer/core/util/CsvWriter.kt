@@ -22,6 +22,19 @@ object CsvWriter {
 
     fun row(values: List<String?>): String = values.joinToString(",") { escape(it) }
 
+    /**
+     * A UTF-8 byte-order mark.
+     *
+     * Excel on Windows assumes the system code page for a .csv unless a BOM is present, which
+     * turns an accented product name into mojibake. Every other common spreadsheet tool skips
+     * the mark, so prefixing it is the safer default for a file the user opens by double-click.
+     */
+    const val UTF8_BOM = "\uFEFF"
+
+    /** The document plus a UTF-8 BOM, for a file that will be opened in a spreadsheet. */
+    fun buildForSpreadsheet(header: List<String>, rows: List<List<String?>>): String =
+        UTF8_BOM + build(header, rows)
+
     fun build(header: List<String>, rows: List<List<String?>>): String {
         val builder = StringBuilder()
         builder.append(row(header)).append("\n")
