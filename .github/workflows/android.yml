@@ -59,6 +59,20 @@ jobs:
           } | sed "s|$GITHUB_WORKSPACE/||g" | sort -u | head -200 | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      # The privacy claim in the README is only worth something if it can be checked against
+      # the APK that was actually built, dependencies and all.
+      - name: Report merged manifest permissions
+        run: |
+          MANIFEST=$(find app/build/intermediates -name AndroidManifest.xml -path '*debug*' | head -1)
+          {
+            echo "### Permissions in the merged manifest"
+            echo ""
+            echo '```'
+            grep -oE 'android:name="android\.permission\.[A-Z_]+"' "$MANIFEST" \
+              | sed 's/android:name="//;s/"//' | sort -u
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Name the APK for humans
         run: |
           mkdir -p artifacts

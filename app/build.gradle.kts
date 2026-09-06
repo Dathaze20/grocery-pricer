@@ -74,9 +74,14 @@ android {
     }
 
     lint {
-        // Lint still runs and still writes its report; it just does not gate the APK build.
-        abortOnError = false
-        checkReleaseBuilds = false
+        // Error-severity findings fail the build; warnings stay report-only so a stylistic
+        // nit cannot block a release.
+        abortOnError = true
+        warningsAsErrors = false
+        checkReleaseBuilds = true
+        // Written on every CI run and uploaded as an artifact.
+        htmlReport = true
+        textReport = true
     }
 }
 
@@ -127,7 +132,6 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     implementation(libs.androidx.datastore.preferences)
-    implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.exifinterface)
 
     implementation(libs.androidx.camera.core)
@@ -140,11 +144,7 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
-    testImplementation(libs.androidx.room.testing)
     testImplementation(libs.androidx.arch.core.testing)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.androidx.junit)
-
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
 }
