@@ -635,30 +635,3 @@ class OrderRepository(
     }
 
 }
-
-// =================================================================================================
-// V2: writing an AI-extracted order
-//
-// Kept as extensions on the repository rather than folded into the class body above so the V1
-// receipt-parser path stays exactly as it was. Both paths converge on the same arithmetic.
-// =================================================================================================
-
-/** The receipt photographs for an order, read once rather than observed. */
-suspend fun OrderRepository.observeReceiptImagesOnce(orderId: Long): List<ReceiptImage> =
-    receiptImagesFor(orderId)
-
-/**
- * Replaces an order's rows with what the model read.
- *
- * Every figure written here came out of [AiOrderIngest], which means out of [CostCalculator] and
- * [PricingEngine]. The model's contribution is the text that went in.
- *
- * The provenance columns are filled in as well - which photographs a row was read from, the
- * verbatim receipt lines, the model's own confidence and anything the validator had to repair -
- * so an answer given in the conversation can be traced back to the paper it came from.
- */
-suspend fun OrderRepository.replaceItemsFromAi(
-    orderId: Long,
-    validated: ValidatedExtraction,
-    rules: PricingRules,
-): Int = writeAiItems(orderId, validated, rules)

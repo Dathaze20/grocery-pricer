@@ -33,7 +33,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.grocerypricer.app.data.model.AppSettings
 import com.grocerypricer.app.data.model.Order
-import com.grocerypricer.app.data.model.OrderStatus
 import com.grocerypricer.app.di.AppContainer
 import com.grocerypricer.app.ui.components.InfoBanner
 import java.text.SimpleDateFormat

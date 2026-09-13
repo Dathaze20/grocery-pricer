@@ -2,7 +2,6 @@ package com.grocerypricer.app.processing
 
 import com.grocerypricer.app.ai.ImagePreparer
 import com.grocerypricer.app.data.files.ImageStore
-import com.grocerypricer.app.data.model.ImageProcessingStatus
 import com.grocerypricer.app.data.repository.OrderRepository
 import com.grocerypricer.app.data.repository.PricingRulesRepository
 import com.grocerypricer.app.ocr.ReceiptTextRecognizer

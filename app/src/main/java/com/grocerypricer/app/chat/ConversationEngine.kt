@@ -128,7 +128,7 @@ class ConversationEngine(
     // ------------------------------------------------------------------ local paths
 
     /** Returns null when the local engine could not settle it, so the caller can escalate. */
-    private fun resolveLocally(
+    private suspend fun resolveLocally(
         request: QueryRequest,
         engine: OrderQueryEngine,
         byId: Map<Long, OrderItem>,
@@ -167,7 +167,7 @@ class ConversationEngine(
         )
     }
 
-    private fun listReply(items: List<OrderItem>, emptyMessage: String): ChatReply {
+    private suspend fun listReply(items: List<OrderItem>, emptyMessage: String): ChatReply {
         if (items.isEmpty()) return ChatReply(emptyMessage)
         return ChatReply(
             ChatAnswerFormatter.numbered(items.map { answerFor(it) }),
