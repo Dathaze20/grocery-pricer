@@ -1,0 +1,117 @@
+name: PWA
+
+# Typechecks, tests and builds the app on every push, then drives the built site
+# in a real browser. Deploys to GitHub Pages from the default branch only.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Typecheck, test and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test -- --reporter=verbose
+
+      - name: Build the PWA
+        run: npm run build
+
+      # The service worker, IndexedDB and the camera input do not exist in jsdom, so
+      # the built site is driven in Chromium before anything is called working.
+      - name: Install Chromium for the browser test
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser smoke test
+        run: npm run test:browser
+
+      # A key in the bundle would be a key handed to everyone who loads the page.
+      # Each user supplies their own at runtime, so nothing key-shaped may ship.
+      - name: Check no API key was built into the bundle
+        run: |
+          if grep -rEn 'AIza[0-9A-Za-z_-]{10,}' dist/ ; then
+            echo "::error::An API key is present in the built site."
+            exit 1
+          fi
+          echo "No key material in dist/."
+
+      - name: Check the app is installable
+        run: |
+          test -f dist/manifest.webmanifest || { echo "::error::No web manifest was built."; exit 1; }
+          test -f dist/sw.js || { echo "::error::No service worker was built."; exit 1; }
+          for icon in icon-192.png icon-512.png icon-512-maskable.png apple-touch-icon.png; do
+            test -f "dist/$icon" || { echo "::error::Missing $icon."; exit 1; }
+          done
+          grep -q '"display":"standalone"' dist/manifest.webmanifest \
+            || { echo "::error::The manifest does not declare a standalone display."; exit 1; }
+          echo "Manifest, service worker and icons are all present."
+
+      - name: Upload the built site
+        uses: actions/upload-artifact@v4
+        with:
+          name: grocery-pricer-site
+          path: dist
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the PWA
+        run: npm run build
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

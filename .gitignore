@@ -1,35 +1,16 @@
+# Dependencies and build output
 node_modules/
 dist/
 dist-ssr/
+coverage/
 *.local
 .vite/
-coverage/
-# Gradle
-.gradle/
-build/
-!gradle/wrapper/gradle-wrapper.jar
-local.properties
+*.tsbuildinfo
 
-# Android Studio / IntelliJ
+# Editors
 .idea/
+.vscode/
 *.iml
-captures/
-.externalNativeBuild/
-.cxx/
-
-# Build output
-*.apk
-*.aab
-*.ap_
-*.dex
-*.class
-release/
-
-# Signing material - never commit any of this
-*.jks
-*.keystore
-keystore.properties
-signing.properties
 
 # OS noise
 .DS_Store
@@ -39,5 +20,9 @@ Thumbs.db
 __pycache__/
 *.pyc
 
-# TypeScript build info
-*.tsbuildinfo
+# Never commit key material. Each user's Gemini key lives in their own browser,
+# and nothing key-shaped belongs in this repository or in a build.
+.env
+.env.*
+!.env.example
+*.key
