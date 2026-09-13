@@ -1,13 +1,24 @@
 # Grocery Pricer
 
-Turn a wholesale receipt into shelf prices, without retyping anything.
+**Grocery Pricer turns a wholesale receipt into a conversation.**
 
-Grocery Pricer is an offline Android app for a small neighbourhood deli or grocery store. You
-photograph the receipt from a Jetro / Restaurant Depot run, it reconstructs the order and works out
-what each individual item really cost after case discounts, and then you walk the store scanning
-barcodes and approving prices.
+Photograph your Jetro / Restaurant Depot receipts once and press one button. Grocery Pricer reads
+every photo, works out what each individual item really cost after case discounts, and opens the
+order so you can just ask about it.
 
-Everything stays on the phone. No account, no server, no API key, no internet connection needed.
+> **You:** How much is the Carnation milk?
+>
+> **Grocery Pricer:**
+> Carnation Evaporated Milk 12 oz
+> $4.20 → $7.99
+
+Ask what anything cost. Ask what you should charge. Ask how many are in the case. Photograph a
+product you are holding and ask what it is. Tell it the price you actually put on the shelf, and it
+remembers for next time.
+
+No spreadsheet. No approving 150 rows before you can use it.
+
+**Photos → one button → ask questions.**
 
 ---
 
@@ -17,9 +28,26 @@ One wholesale order can be 150 products. Working out the true cost of each one b
 divided by units per case, minus a flyer discount that may or may not apply to the whole case - and
 then deciding a shelf price for each is an evening's work, and it is easy to get wrong.
 
-The receipt already has the numbers. The problem is that they are on paper, the discounts are on
-separate lines, and the printed "unit" price is the price *before* the discount. Grocery Pricer does
-the arithmetic, shows its working, and gets out of the way.
+The receipt already has the numbers. The problem is that they are on paper, the discounts sit on
+separate lines, and the printed "unit" price is the price *before* the discount.
+
+Version 1 read the receipt and then made you check its work: 150 rows to scroll, confirm and save
+before the app was any use. That is a different evening's work, not less of one. Version 2 does the
+reading and the arithmetic and then waits to be asked a question, which is what you actually wanted
+standing in the shop with a box in your hand.
+
+### What is different in 2.0
+
+| | Version 1 | Version 2 |
+|---|---|---|
+| After importing photos | Review and approve every row | Ask a question |
+| Finding a price | Scan the barcode | Say the name, or photograph it |
+| Reading the receipt | On-device OCR only | A multimodal model, with OCR as evidence |
+| Uncertain rows | A list of 47 to work through | Mentioned once, asked about only if they matter |
+| Home screen | Six financial stat cards | Two buttons |
+| Who does the arithmetic | Kotlin | **Still Kotlin** |
+
+That last row is the one that does not change, and section *How pricing works* below spells out why.
 
 ---
 
@@ -63,16 +91,6 @@ the arithmetic, shows its working, and gets out of the way.
 - Gross profit, gross margin and markup, kept clearly distinct
 - Order summary, "today's price list", CSV export of an order or the whole catalogue
 - Versioned JSON backup and restore, optionally including receipt photos
-
----
-
-## Screenshots
-
-_Screenshots go here._
-
-| Home | Review | Pricing |
-| --- | --- | --- |
-| _dashboard_ | _receipt review cards_ | _scan result with cost and suggested price_ |
 
 ---
 
@@ -147,6 +165,12 @@ The ladder ships with these starting tiers, all editable in **Pricing rules**:
 The tier decides the target price first; the price ending is applied afterwards. That is why `$5.16`
 becomes `$5.99` rather than being rounded to the nearest `.99`.
 
+The ranges above are printed to the cent, but a true unit cost is a case price divided by a pack
+count and rarely lands on one — `$1.2450` is an ordinary result. The ladder is therefore read as
+contiguous bands: a cost belongs to the last tier that starts at or below it, so nothing falls
+through the gap between `$1.24` and `$1.25`. Only a cost above the top of the ladder uses the
+markup rule.
+
 Profit is always reported three ways, and margin is never labelled markup:
 
 ```
@@ -163,13 +187,57 @@ of ten-thousandths of a dollar. No floating point touches a price.
 
 ## Privacy
 
-- Receipt photos, product photos, costs and prices stay on the device.
-- Nothing is uploaded. There is no analytics, no crash reporting, no account, and no server.
-- Text recognition and barcode scanning run entirely on the phone; the models are bundled in the APK.
-- The only permission requested is `CAMERA`, and only when you first open the scanner. Gallery
-  imports use the Android photo picker and exports use the Storage Access Framework, so no storage
-  permission is needed.
-- Data leaves the device only when *you* export a CSV or a backup to a location you choose.
+**Version 2 sends data off the phone. Version 1 did not. This section says exactly what and when.**
+
+### What leaves the phone
+
+- **Receipt photographs**, when you press PROCESS ORDER. They go to the AI provider you configured,
+  along with the on-device OCR text, so it can read the order.
+- **A product photograph**, when you attach one to the conversation and ask about it.
+- **A short shortlist of product names from the current order**, when a typed question is ambiguous
+  enough to need the model. Never the whole order, and never your prices - the model is asked which
+  product you meant, not what anything costs.
+
+That is the complete list.
+
+### What never leaves the phone
+
+- Your costs, your shelf prices, and your price history.
+- The database, the receipt images once processed, your backups and your CSV exports.
+- Your API key. It is encrypted by the Android Keystore, it is sent only to the provider it
+  authenticates to, and it is never written to a log.
+
+There is no analytics, no crash reporting, no advertising, no account, and no cloud sync of your
+data. Nothing is uploaded on a schedule or in the background - only when you press the button.
+
+### Using it without AI
+
+An order that has already been processed stays fully usable offline: product search, known costs,
+known prices, barcode lookup, price history, the pricing engine, and any question the on-device
+parser can answer. Only reading new receipt photos, understanding product photographs and the more
+open-ended questions need a connection.
+
+### Permissions
+
+This app's own manifest declares two permissions. `CAMERA` is requested at runtime, only when you
+first open the scanner. `VIBRATE` needs no prompt and is used for the buzz confirming a scan.
+
+The installed APK holds **four**: the ML Kit libraries add `INTERNET` and `ACCESS_NETWORK_STATE`
+through the manifest merger. In version 1 nothing used them. In version 2 `INTERNET` is used, for
+exactly what is listed above.
+
+Every CI run greps the *merged* manifest and prints the permission list into the build log and run
+summary, so what the APK actually asks for is on the record next to the APK itself.
+
+Gallery imports use the Android photo picker and exports use the Storage Access Framework, so no
+storage permission is needed.
+
+### The cost
+
+The AI provider is billed to your own API key, by the provider, not by this app. Reading an order
+is the expensive part and happens once per order; after that most questions are answered on the
+phone and cost nothing. The app deliberately searches locally first, sends small batches rather than
+whole orders, and scales photographs down before uploading them.
 
 ---
 
@@ -216,6 +284,11 @@ Deliberate design decisions:
   shows what was actually paid after the catalogue moves on.
 - **Price history is append-only** and Room migrations are real - destructive migration is never
   enabled.
+- **The database schema is exported** to `app/schemas/`, so a version 2 migration can be tested
+  against the exact version 1 it has to upgrade. The version 1 JSON is not in the repository yet: it
+  is produced by the Android build, which needs the SDK, and it has only ever been generated on CI.
+  Every run attaches it to the **Grocery-Pricer-reports** artifact and warns if it is missing or
+  stale, so it can be committed before anyone writes that migration.
 
 ### Future-proofing
 
@@ -234,6 +307,8 @@ Kotlin - Jetpack Compose - Material 3 - MVVM - Room - DataStore - CameraX - ML K
 ML Kit Barcode Scanning - Coroutines and Flow - Navigation Compose - Android Photo Picker - Storage
 Access Framework.
 
+- `versionName` 1.0.0, `versionCode` 1 — both in `app/build.gradle.kts`. Raise `versionCode` on
+  every release you distribute; Android uses it, not `versionName`, to decide what is an upgrade.
 - `minSdk` 26 (Android 8.0), `targetSdk`/`compileSdk` 35
 - Java 17 toolchain, Kotlin 2.0, AGP 8.7, Gradle 8.11
 - No Firebase, no server, no accounts, no secrets in the APK
@@ -259,8 +334,14 @@ In Android Studio, use **File -> Open** and select this repository's root folder
 ./gradlew :core:test                          # pricing, parsing and matching only
 ```
 
-`:core:test` is plain JVM and runs without the Android SDK installed at all, which makes it a fast
-way to work on the pricing and parsing logic.
+**160 unit tests: 123 in `core`, 37 in `app`.** `:core:test` is plain JVM and runs without the
+Android SDK installed at all, which makes it a fast way to work on the pricing and parsing logic.
+The `app` tests use Robolectric to exercise the real Room database and the backup round-trip.
+
+The suite deliberately concentrates on what costs money if it is wrong: exact decimal arithmetic,
+every discount scope, true unit cost, the cost ladder and its boundaries, price endings, margin
+versus markup, receipt parsing and OCR correction, duplicate and photo-overlap detection, product
+matching, CSV output, database writes, and backup restore.
 
 ## Building an APK
 
@@ -276,6 +357,9 @@ Android Lint, builds the debug APK, and uploads it.
 
 To download the APK: **GitHub -> Actions -> a successful "Android" run -> Artifacts ->
 `Grocery-Pricer-Android-debug`**. Test and lint reports are uploaded as `Grocery-Pricer-reports`.
+
+A failing unit test or an error-severity lint finding fails the run, so no APK is published from a
+build that did not pass.
 
 `.github/workflows/release.yml` builds a signed release APK, and only does anything
 when release signing secrets are configured on the repository. No signing material is committed.
@@ -308,8 +392,8 @@ and does not need Play Store distribution.
   no sales deduction, because there is no POS integration.
 - **No automated UI tests.** Coverage is on the calculation, parsing, matching, database and backup
   layers; the Compose screens are not instrumented.
-- **Android Lint does not gate the build.** It runs and its report is uploaded on every CI run, but a
-  warning does not fail the APK build.
+- **Android Lint gates on errors only.** Error-severity findings fail CI; warnings are reported and
+  uploaded but do not block a release.
 - **Release builds are unsigned unless you supply a keystore**, and the release workflow skips
   itself when no signing secrets are present.
 

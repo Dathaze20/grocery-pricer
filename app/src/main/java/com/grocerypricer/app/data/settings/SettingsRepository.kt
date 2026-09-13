@@ -40,6 +40,8 @@ class SettingsRepository(context: Context) {
             prefs[Keys.THEME_MODE] = updated.themeMode.name
             prefs[Keys.TUTORIAL_COMPLETED] = updated.tutorialCompleted
             prefs[Keys.CURRENT_ORDER_ID] = updated.currentOrderId
+            prefs[Keys.AI_PROVIDER] = updated.aiProvider
+            prefs[Keys.AI_MODEL] = updated.aiModel
         }
     }
 
@@ -62,6 +64,8 @@ class SettingsRepository(context: Context) {
             themeMode = ThemeMode.fromName(this[Keys.THEME_MODE]),
             tutorialCompleted = this[Keys.TUTORIAL_COMPLETED] ?: defaults.tutorialCompleted,
             currentOrderId = this[Keys.CURRENT_ORDER_ID] ?: defaults.currentOrderId,
+            aiProvider = this[Keys.AI_PROVIDER] ?: defaults.aiProvider,
+            aiModel = this[Keys.AI_MODEL] ?: defaults.aiModel,
         )
     }
 
@@ -78,5 +82,7 @@ class SettingsRepository(context: Context) {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val TUTORIAL_COMPLETED = booleanPreferencesKey("tutorial_completed")
         val CURRENT_ORDER_ID = longPreferencesKey("current_order_id")
+        val AI_PROVIDER = stringPreferencesKey("ai_provider")
+        val AI_MODEL = stringPreferencesKey("ai_model")
     }
 }

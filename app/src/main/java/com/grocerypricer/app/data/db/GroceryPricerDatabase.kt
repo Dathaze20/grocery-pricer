@@ -5,6 +5,8 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
+import com.grocerypricer.app.data.db.dao.AiExtractionMetadataDao
+import com.grocerypricer.app.data.db.dao.ChatDao
 import com.grocerypricer.app.data.db.dao.OrderDao
 import com.grocerypricer.app.data.db.dao.OrderItemDao
 import com.grocerypricer.app.data.db.dao.PriceHistoryDao
@@ -12,6 +14,9 @@ import com.grocerypricer.app.data.db.dao.PricingRuleDao
 import com.grocerypricer.app.data.db.dao.ProductDao
 import com.grocerypricer.app.data.db.dao.ReceiptImageDao
 import com.grocerypricer.app.data.db.dao.ScanHistoryDao
+import com.grocerypricer.app.data.db.entity.AiExtractionMetadataEntity
+import com.grocerypricer.app.data.db.entity.ChatMessageEntity
+import com.grocerypricer.app.data.db.entity.ChatSessionEntity
 import com.grocerypricer.app.data.db.entity.OrderEntity
 import com.grocerypricer.app.data.db.entity.OrderItemEntity
 import com.grocerypricer.app.data.db.entity.PriceHistoryEntity
@@ -29,8 +34,11 @@ import com.grocerypricer.app.data.db.entity.ScanHistoryEntity
         PriceHistoryEntity::class,
         PricingRuleEntity::class,
         ScanHistoryEntity::class,
+        ChatSessionEntity::class,
+        ChatMessageEntity::class,
+        AiExtractionMetadataEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class GroceryPricerDatabase : RoomDatabase() {
@@ -42,15 +50,17 @@ abstract class GroceryPricerDatabase : RoomDatabase() {
     abstract fun priceHistoryDao(): PriceHistoryDao
     abstract fun pricingRuleDao(): PricingRuleDao
     abstract fun scanHistoryDao(): ScanHistoryDao
+    abstract fun chatDao(): ChatDao
+    abstract fun aiExtractionMetadataDao(): AiExtractionMetadataDao
 
     companion object {
         const val DATABASE_NAME = "grocery_pricer.db"
 
         /**
-         * Real migrations go here as the schema evolves. Destructive migration is deliberately
-         * never enabled: a store's purchase history is not something to drop on a version bump.
+         * Real migrations, in order. Destructive migration is deliberately never enabled: a
+         * store's purchase history is not something to drop on a version bump.
          */
-        val MIGRATIONS: Array<Migration> = emptyArray()
+        val MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2)
 
         @Volatile
         private var instance: GroceryPricerDatabase? = null

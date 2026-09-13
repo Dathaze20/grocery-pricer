@@ -13,6 +13,8 @@ object Routes {
     private const val SCAN_BASE = "scan"
     private const val MANUAL_ITEM_BASE = "manual_item"
     private const val PRODUCT_BASE = "product"
+    private const val CHAT_BASE = "chat"
+    private const val PROCESSING_BASE = "processing"
 
     const val ARG_ORDER_ID = "orderId"
     const val ARG_PRODUCT_ID = "productId"
@@ -26,10 +28,17 @@ object Routes {
     const val MANUAL_ITEM = "$MANUAL_ITEM_BASE/{$ARG_ORDER_ID}"
     const val PRODUCT = "$PRODUCT_BASE/{$ARG_PRODUCT_ID}"
 
+    /** The V2 main screen: one order, one conversation. */
+    const val CHAT = "$CHAT_BASE/{$ARG_ORDER_ID}"
+
+    /** Shown while PROCESS ORDER runs, then replaced by the chat. */
+    const val PROCESSING = "$PROCESSING_BASE/{$ARG_ORDER_ID}"
+
     const val CATALOG = "catalog"
     const val HISTORY = "history"
     const val RULES = "rules"
     const val SETTINGS = "settings"
+    const val AI_SETUP = "ai_setup"
     const val BACKUP = "backup"
 
     fun receipts(orderId: Long) = "$RECEIPTS_BASE/$orderId"
@@ -39,4 +48,6 @@ object Routes {
     fun scan(orderId: Long, cameraMode: Boolean) = "$SCAN_BASE/$orderId/$cameraMode"
     fun manualItem(orderId: Long) = "$MANUAL_ITEM_BASE/$orderId"
     fun product(productId: Long) = "$PRODUCT_BASE/$productId"
+    fun chat(orderId: Long) = "$CHAT_BASE/$orderId"
+    fun processing(orderId: Long) = "$PROCESSING_BASE/$orderId"
 }

@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -44,6 +45,7 @@ fun SettingsScreen(
     container: AppContainer,
     settings: AppSettings,
     onPricingRules: () -> Unit,
+    onAiSetup: () -> Unit,
     onBack: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -144,6 +146,28 @@ fun SettingsScreen(
                 }
             }
 
+            SectionCard("AI provider") {
+                Column {
+                    Text(
+                        if (container.secureKeyStore.hasApiKey()) {
+                            "A key is saved on this phone. Grocery Pricer can read receipt photos."
+                        } else {
+                            "Not set up yet. Grocery Pricer needs a key before it can read receipt photos."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        "Model: " + settings.aiModel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    TextButton(onClick = onAiSetup, modifier = Modifier.padding(top = 8.dp)) {
+                        Text("AI SETUP AND TEST CONNECTION")
+                    }
+                }
+            }
+
             SectionCard("Backup") {
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -186,17 +210,22 @@ fun SettingsScreen(
 
             SectionCard("Privacy") {
                 Text(
-                    "Receipt and product information stays on this device unless you explicitly export it. " +
-                        "Grocery Pricer does not upload receipt photos, product photos or prices, does not " +
-                        "collect analytics, and does not need an account or an internet connection. Text " +
-                        "recognition and barcode scanning run on the phone itself.",
+                    "Your costs, prices and history stay on this device unless you export them. " +
+                        "Receipt photos are sent to the AI provider you configured when you press " +
+                        "PROCESS ORDER, and a product photo is sent when you attach one to a question - " +
+                        "that is the only time anything leaves the phone. There is no analytics, no " +
+                        "advertising, no account and no cloud sync, and your API key is encrypted on " +
+                        "this device. Barcode scanning and text recognition still run on the phone.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
 
             SectionCard("About") {
                 Column {
-                    Text("Grocery Pricer 1.0.0", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Grocery Pricer " + com.grocerypricer.app.BuildConfig.VERSION_NAME,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
                     Text(
                         "Local-first wholesale receipt pricing.",
                         style = MaterialTheme.typography.bodySmall,

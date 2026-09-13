@@ -92,7 +92,7 @@ class OrderViewModel(
     suspend fun buildCsv(): Pair<String, String>? {
         val order = container.orderRepository.getOrder(orderId) ?: return null
         val items = container.orderRepository.getItems(orderId)
-        return CsvExporter.orderFileName(order) to CsvExporter.orderCsv(order, items)
+        return CsvExporter.orderFileName(order) to CsvExporter.orderCsvForFile(order, items)
     }
 
     fun approvePrice(item: OrderItem, price: com.grocerypricer.core.money.Money) {

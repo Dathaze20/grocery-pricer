@@ -16,8 +16,8 @@ android {
         applicationId = "com.grocerypricer.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
@@ -58,6 +58,8 @@ android {
 
     buildFeatures {
         compose = true
+        // So the About screen reads the version from here rather than repeating it.
+        buildConfig = true
     }
 
     packaging {
@@ -74,9 +76,14 @@ android {
     }
 
     lint {
-        // Lint still runs and still writes its report; it just does not gate the APK build.
-        abortOnError = false
-        checkReleaseBuilds = false
+        // Error-severity findings fail the build; warnings stay report-only so a stylistic
+        // nit cannot block a release.
+        abortOnError = true
+        warningsAsErrors = false
+        checkReleaseBuilds = true
+        // Written on every CI run and uploaded as an artifact.
+        htmlReport = true
+        textReport = true
     }
 }
 
@@ -106,6 +113,13 @@ ksp {
 dependencies {
     implementation(project(":core"))
 
+    // Talking to the AI provider. The official Anthropic SDK is a server-side JVM library
+    // (Jackson databind, Apache HttpClient 5, a schema generator) and there is no Android
+    // one, so the Messages API is spoken directly over the client Android apps already use.
+    implementation(libs.okhttp)
+    // Order processing survives the user leaving the app.
+    implementation(libs.androidx.work.runtime.ktx)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -127,7 +141,6 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     implementation(libs.androidx.datastore.preferences)
-    implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.exifinterface)
 
     implementation(libs.androidx.camera.core)
@@ -140,11 +153,7 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
-    testImplementation(libs.androidx.room.testing)
     testImplementation(libs.androidx.arch.core.testing)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.androidx.junit)
-
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
 }

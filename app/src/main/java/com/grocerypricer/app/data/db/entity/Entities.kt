@@ -51,6 +51,15 @@ data class OrderEntity(
     val status: String,
     val createdAt: Long,
     val updatedAt: Long,
+
+    // ---- V2. Every column added to an existing table is nullable on purpose: a NOT NULL
+    // column added by ALTER TABLE needs a SQL DEFAULT, which then has to be mirrored with
+    // @ColumnInfo(defaultValue) or Room's schema validation rejects the upgrade and the app
+    // crashes on launch for anyone with V1 data. Nullable sidesteps that whole class of bug. ----
+
+    /** A short reason the last processing run failed. Never carries a credential. */
+    val processingError: String? = null,
+    val processedAt: Long? = null,
 )
 
 /**
@@ -120,6 +129,21 @@ data class OrderItemEntity(
 
     val createdAt: Long,
     val updatedAt: Long,
+
+    // ---- V2 provenance. All nullable, for the reason given on OrderEntity. ----
+
+    val brand: String? = null,
+    /** The product name exactly as printed, before the model cleaned it up. */
+    val rawName: String? = null,
+    /** The model's own confidence in this row, 0.0 to 1.0. */
+    val aiConfidence: Double? = null,
+    /** Comma-separated [com.grocerypricer.core.ai.ExtractionIssue] names. */
+    val extractionIssues: String? = null,
+    /** JSON array of the receipt_images ids this row was read from. */
+    val sourcePhotoIdsJson: String? = null,
+    /** The case-price text as printed, kept so an answer can be traced to the paper. */
+    val rawCasePriceText: String? = null,
+    val rawDiscountText: String? = null,
 )
 
 /** A receipt photograph plus whatever OCR made of it. The original stays on the device. */
@@ -149,6 +173,12 @@ data class ReceiptImageEntity(
     val lineCount: Int = 0,
     val position: Int = 0,
     val createdAt: Long,
+
+    // ---- V2. Nullable, for the reason given on OrderEntity. ----
+
+    /** One of [com.grocerypricer.core.ai.OrderImageType]. Null on rows imported by V1. */
+    val imageType: String? = null,
+    val classificationConfidence: Double? = null,
 )
 
 /** Every cost and shelf price a product has ever had. Append-only; nothing is overwritten. */

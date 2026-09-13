@@ -64,7 +64,22 @@ data class PricingRules(
     /** A wholesale cost move of at least this much is worth telling the user about. */
     val costChangeAlertPercent: BigDecimal = BigDecimal("10"),
 ) {
-    fun tierFor(cost: Money): CostTier? = tiers.firstOrNull { it.contains(cost) }
+    /**
+     * The tier a cost belongs to.
+     *
+     * A true unit cost is a case price divided by a pack count, so it rarely lands on a whole
+     * cent - $1.2450 is an ordinary result. The ladder is therefore read as contiguous bands:
+     * a cost belongs to the last tier that starts at or below it. Matching each tier's printed
+     * range literally would leave a gap between $1.24 and $1.25 that costs fell through.
+     * Anything above the top of the ladder has no tier and uses the markup rule instead.
+     */
+    fun tierFor(cost: Money): CostTier? {
+        if (tiers.isEmpty()) return null
+        val ordered = tiers.sortedBy { it.minCost }
+        if (cost < ordered.first().minCost) return null
+        if (cost > ordered.last().maxCost) return null
+        return ordered.lastOrNull { it.minCost <= cost }
+    }
 
     fun categoryRuleFor(category: Category): CategoryPricingRule? =
         categoryRules[category]?.takeIf { it.enabled }
