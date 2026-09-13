@@ -28,3 +28,7 @@ signing.properties
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Python bytecode from the repo's own tooling scripts
+__pycache__/
+*.pyc
