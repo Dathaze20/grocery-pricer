@@ -59,8 +59,18 @@ jobs:
           } | sed "s|$GITHUB_WORKSPACE/||g" | sort -u | head -200 | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      # The privacy claim in the README is only worth something if it can be checked against
-      # the APK that was actually built, dependencies and all.
+      - name: Print the exported Room schema
+        if: always()
+        run: |
+          # The Android build is the only place this JSON is produced, and the schema it
+          # describes is what a migration has to match exactly. Printing it means a migration
+          # can be checked against the real expected schema rather than against memory.
+          for f in app/schemas/*/*.json; do
+            [ -e "$f" ] || continue
+            echo "===== $f ====="
+            cat "$f"
+          done
+
       - name: Check the exported Room schema is committed
         if: always()
         run: |
@@ -96,6 +106,8 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # The privacy claim in the README is only worth something if it can be checked against
+      # the APK that was actually built, dependencies and all.
       - name: Report merged manifest permissions
         run: |
           MANIFEST=$(find app/build/intermediates -name AndroidManifest.xml -path '*debug*' | head -1)
@@ -110,18 +122,26 @@ jobs:
 
       - name: Name the APK for humans
         run: |
+          # Read the version out of the build file rather than repeating it here, so bumping
+          # the app version never leaves CI publishing a stale filename.
+          VERSION=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | head -1 | cut -d'"' -f2)
+          if [ -z "$VERSION" ]; then
+            echo "Could not read versionName from app/build.gradle.kts" >&2
+            exit 1
+          fi
+          echo "APK_NAME=grocery-pricer-${VERSION}-debug.apk" >> "$GITHUB_ENV"
           mkdir -p artifacts
           cp app/build/outputs/apk/debug/app-debug.apk \
-             artifacts/grocery-pricer-1.0.0-debug.apk
+             "artifacts/grocery-pricer-${VERSION}-debug.apk"
           ls -lh artifacts/
 
       - name: Report APK size
         run: |
-          SIZE=$(stat -c%s artifacts/grocery-pricer-1.0.0-debug.apk)
+          SIZE=$(stat -c%s "artifacts/$APK_NAME")
           {
             echo "### Grocery Pricer debug APK"
             echo ""
-            echo "- File: \`grocery-pricer-1.0.0-debug.apk\`"
+            echo "- File: \`$APK_NAME\`"
             echo "- Size: $(numfmt --to=iec --suffix=B "$SIZE")"
             echo "- Download it from the **Grocery-Pricer-Android-debug** artifact below."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -130,7 +150,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Grocery-Pricer-Android-debug
-          path: artifacts/grocery-pricer-1.0.0-debug.apk
+          path: artifacts/*.apk
           if-no-files-found: error
           retention-days: 90
 

@@ -20,7 +20,34 @@ enum class OrderStatus(val displayName: String) {
     ACTIVE("Active"),
 
     /** Everything has an approved shelf price. */
-    COMPLETED("Completed");
+    COMPLETED("Completed"),
+
+    // ---- V2 states. The four above are kept so orders saved by V1 still read. ----
+
+    /** Created, photographs not processed yet. */
+    DRAFT("Draft"),
+
+    /** Photographs are being read right now. */
+    PROCESSING("Analyzing"),
+
+    /**
+     * Usable. Deliberately does not require that a human approved every row: making the
+     * shopkeeper confirm 150 products before they can ask a question is the V1 workflow V2
+     * exists to remove.
+     */
+    READY("Ready"),
+
+    /** Usable, but something in it could not be read and may need a look. */
+    NEEDS_ATTENTION("Needs attention"),
+
+    /** Processing failed outright. The photographs and OCR are still there to retry from. */
+    FAILED("Could not process");
+
+    /** True once questions can be asked of this order. */
+    val isAskable: Boolean
+        get() = this == READY || this == NEEDS_ATTENTION || this == ACTIVE || this == COMPLETED
+
+    val isBusy: Boolean get() = this == PROCESSING || this == IMPORTING
 
     companion object {
         fun fromName(value: String?): OrderStatus =
@@ -190,3 +217,15 @@ data class AppSettings(
     val tutorialCompleted: Boolean = false,
     val currentOrderId: Long = 0,
 )
+
+/** Who said it. Stored as a string so the table survives adding a third kind later. */
+enum class ChatRole(val storedName: String) {
+    USER("user"),
+    ASSISTANT("assistant"),
+    ;
+
+    companion object {
+        fun fromName(value: String?): ChatRole =
+            entries.firstOrNull { it.storedName.equals(value, ignoreCase = true) } ?: ASSISTANT
+    }
+}

@@ -16,8 +16,8 @@ android {
         applicationId = "com.grocerypricer.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
@@ -110,6 +110,13 @@ ksp {
 
 dependencies {
     implementation(project(":core"))
+
+    // Talking to the AI provider. The official Anthropic SDK is a server-side JVM library
+    // (Jackson databind, Apache HttpClient 5, a schema generator) and there is no Android
+    // one, so the Messages API is spoken directly over the client Android apps already use.
+    implementation(libs.okhttp)
+    // Order processing survives the user leaving the app.
+    implementation(libs.androidx.work.runtime.ktx)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
