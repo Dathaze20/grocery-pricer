@@ -14,6 +14,7 @@ import com.grocerypricer.app.data.model.OrderStatus
 import com.grocerypricer.app.data.model.OrderSummary
 import com.grocerypricer.app.data.model.Product
 import com.grocerypricer.app.data.model.ReceiptImage
+import com.grocerypricer.core.ai.ValidatedExtraction
 import com.grocerypricer.core.matching.MatchOutcome
 import com.grocerypricer.core.matching.NameNormalizer
 import com.grocerypricer.core.matching.ProductMatcher
@@ -503,4 +504,161 @@ class OrderRepository(
             CostMovement(item, previous, change.changeAmount, change.changePercent)
         }.sortedByDescending { it.changeAmount.amount }
     }
+
+    // --- V2: writing an order the model read ---------------------------------------------------
+
+    /** The receipt photographs for an order, read once rather than observed. */
+    suspend fun receiptImagesOnce(orderId: Long): List<ReceiptImage> =
+        receiptImageDao.getByOrder(orderId).map { it.toDomain() }
+
+    /** Records why a processing run failed. Stores an error *type*, never a message. */
+    suspend fun markProcessingFailed(orderId: Long, errorType: String?) {
+        val timestamp = now()
+        orderDao.getById(orderId)?.let {
+            orderDao.update(
+                it.copy(
+                    status = OrderStatus.FAILED.name,
+                    processingError = errorType,
+                    processedAt = timestamp,
+                    updatedAt = timestamp,
+                ),
+            )
+        }
+    }
+
+    suspend fun markProcessing(orderId: Long) {
+        val timestamp = now()
+        orderDao.getById(orderId)?.let {
+            orderDao.update(
+                it.copy(
+                    status = OrderStatus.PROCESSING.name,
+                    processingError = null,
+                    updatedAt = timestamp,
+                ),
+            )
+        }
+    }
+
+    /** Stores how each photograph was classified, so a product shot is not read as a receipt. */
+    suspend fun saveImageClassification(imageId: Long, type: String, confidence: Double) {
+        receiptImageDao.getById(imageId)?.let {
+            receiptImageDao.update(it.copy(imageType = type, classificationConfidence = confidence))
+        }
+    }
+
+    /**
+     * Replaces an order's rows with what the model read.
+     *
+     * Every figure written here came out of [AiOrderIngest] - which is to say out of
+     * [CostCalculator] and [PricingEngine]. The model's entire contribution is the text that
+     * went in.
+     *
+     * The provenance columns are filled in too: which photographs a row came from, the verbatim
+     * receipt lines, the model's own confidence, and anything the validator had to repair. That
+     * is what lets an answer in the conversation be traced back to the paper.
+     */
+    suspend fun replaceItemsFromAi(
+        orderId: Long,
+        validated: ValidatedExtraction,
+        rules: PricingRules,
+    ): Int {
+        val catalogue = productRepository.getAll()
+        val engine = PricingEngine(rules)
+
+        val entities = validated.accepted.map { validatedItem ->
+            val row = AiOrderIngest.price(validatedItem, catalogue, engine)
+            val extracted = validatedItem.item
+
+            OrderItem(
+                orderId = orderId,
+                productId = row.product?.id,
+                description = extracted.canonicalName ?: extracted.rawName.orEmpty(),
+                upc = extracted.upc,
+                supplierSku = extracted.supplierSku,
+                size = extracted.size,
+                category = row.category,
+                casePrice = row.casePrice,
+                unitsPerCase = row.unitsPerCase,
+                casesPurchased = row.casesPurchased,
+                looseUnits = 0,
+                printedUnitCost = extracted.printedUnitCost?.let { Money.parseOrNull(it) },
+                discount = row.discount,
+                cost = row.cost,
+                suggestedPrice = row.suggestedPrice,
+                approvedPrice = null,
+                priceApproved = false,
+                confidence = row.confidence,
+                issues = emptyList(),
+                reviewApproved = false,
+                rawText = extracted.sourceText.joinToString("\n"),
+            ) to row
+        }
+
+        val timestamp = now()
+        database.withTransaction {
+            orderItemDao.deleteByOrder(orderId)
+            orderItemDao.insertAll(
+                entities.map { (item, row) ->
+                    item.toEntity(timestamp, timestamp).copy(
+                        brand = row.item.item.brand,
+                        rawName = row.item.item.rawName,
+                        aiConfidence = row.item.item.confidence,
+                        extractionIssues = row.item.issues
+                            .joinToString(",") { it.name }
+                            .takeIf { it.isNotEmpty() },
+                        sourcePhotoIdsJson = row.item.item.sourcePhotoIds
+                            .takeIf { it.isNotEmpty() }
+                            ?.joinToString(prefix = "[", postfix = "]"),
+                        rawCasePriceText = row.item.item.casePrice,
+                        rawDiscountText = row.item.item.discount?.amount,
+                    )
+                },
+            )
+            orderDao.getById(orderId)?.let {
+                orderDao.update(
+                    it.copy(
+                        // Ready means askable. It deliberately does not mean a human confirmed
+                        // every row - that requirement is the V1 workflow V2 exists to remove.
+                        status = if (validated.itemsNeedingAttention.isEmpty()) {
+                            OrderStatus.READY.name
+                        } else {
+                            OrderStatus.NEEDS_ATTENTION.name
+                        },
+                        processingError = null,
+                        processedAt = timestamp,
+                        updatedAt = timestamp,
+                    ),
+                )
+            }
+        }
+        return entities.size
+    }
+
 }
+
+// =================================================================================================
+// V2: writing an AI-extracted order
+//
+// Kept as extensions on the repository rather than folded into the class body above so the V1
+// receipt-parser path stays exactly as it was. Both paths converge on the same arithmetic.
+// =================================================================================================
+
+/** The receipt photographs for an order, read once rather than observed. */
+suspend fun OrderRepository.observeReceiptImagesOnce(orderId: Long): List<ReceiptImage> =
+    receiptImagesFor(orderId)
+
+/**
+ * Replaces an order's rows with what the model read.
+ *
+ * Every figure written here came out of [AiOrderIngest], which means out of [CostCalculator] and
+ * [PricingEngine]. The model's contribution is the text that went in.
+ *
+ * The provenance columns are filled in as well - which photographs a row was read from, the
+ * verbatim receipt lines, the model's own confidence and anything the validator had to repair -
+ * so an answer given in the conversation can be traced back to the paper it came from.
+ */
+suspend fun OrderRepository.replaceItemsFromAi(
+    orderId: Long,
+    validated: ValidatedExtraction,
+    rules: PricingRules,
+): Int = writeAiItems(orderId, validated, rules)

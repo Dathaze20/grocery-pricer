@@ -59,17 +59,12 @@ jobs:
           } | sed "s|$GITHUB_WORKSPACE/||g" | sort -u | head -200 | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Print the exported Room schema
-        if: always()
-        run: |
-          # The Android build is the only place this JSON is produced, and the schema it
-          # describes is what a migration has to match exactly. Printing it means a migration
-          # can be checked against the real expected schema rather than against memory.
-          for f in app/schemas/*/*.json; do
-            [ -e "$f" ] || continue
-            echo "===== $f ====="
-            cat "$f"
-          done
+      # A Room migration is the one piece of this app no unit test can exercise without the
+      # Android SDK, and getting it wrong crashes on launch for anyone who already had data.
+      # Room exports what it expects at build time, so the migration is checked against that
+      # rather than against anybody's memory of Room's CREATE TABLE formatting.
+      - name: Check the migration matches the schema Room expects
+        run: python3 tools/check_migration.py app/schemas app/src/main/java/com/grocerypricer/app/data/db/Migrations.kt
 
       - name: Check the exported Room schema is committed
         if: always()
