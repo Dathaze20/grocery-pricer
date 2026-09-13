@@ -59,7 +59,7 @@ import java.io.File
 fun ReceiptImportScreen(
     container: AppContainer,
     orderId: Long,
-    onReview: (Long) -> Unit,
+    onProcess: (Long) -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -207,15 +207,18 @@ fun ReceiptImportScreen(
             item { Spacer(Modifier.height(8.dp)) }
 
             item {
+                // The one button V2 asks for. Everything after this happens without the
+                // shopkeeper pressing anything else, and ends in the conversation.
                 BigActionButton(
-                    "REVIEW ORDER",
-                    enabled = !state.busy && images.any { it.status == ImageProcessingStatus.DONE },
-                    onClick = { viewModel.buildOrder { onReview(orderId) } },
+                    "PROCESS ORDER",
+                    enabled = !state.busy && images.isNotEmpty(),
+                    onClick = { onProcess(orderId) },
                 )
             }
             item {
                 Text(
-                    "Rebuilding replaces the rows read from these photos. Items you added by hand are replaced too.",
+                    "I'll read every photo, work out what each case cost, and open the order " +
+                        "so you can ask about it. Processing again replaces what was read before.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
