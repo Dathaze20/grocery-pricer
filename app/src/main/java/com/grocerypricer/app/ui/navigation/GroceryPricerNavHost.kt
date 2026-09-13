@@ -40,19 +40,30 @@ import kotlinx.coroutines.launch
 fun GroceryPricerNavHost(
     container: AppContainer,
     settings: AppSettings,
-    /** Set when the app was opened from an "order ready" notification. */
-    openOrderId: Long? = null,
+    /** Set while an "order ready" notification is waiting to be opened. */
+    notificationOrderId: Long? = null,
+    /** Called once the notification has been navigated to, so it is not acted on twice. */
+    onNotificationHandled: () -> Unit = {},
 ) {
     val navController = rememberNavController()
     val scope = rememberCoroutineScope()
 
+    // Every notification, cold launch included, is navigated to here rather than through
+    // startDestination. One code path, and it leaves Home underneath on the back stack - making
+    // the order the start destination instead would mean Back closes the app from the very
+    // screen the shopkeeper was sent to.
+    LaunchedEffect(notificationOrderId) {
+        val orderId = notificationOrderId ?: return@LaunchedEffect
+        navController.navigate(Routes.chat(orderId)) {
+            // A second tap for the order already on screen must not stack another copy of it.
+            launchSingleTop = true
+        }
+        onNotificationHandled()
+    }
+
     NavHost(
         navController = navController,
-        startDestination = when {
-            openOrderId != null -> Routes.chat(openOrderId)
-            settings.tutorialCompleted -> Routes.HOME
-            else -> Routes.TUTORIAL
-        },
+        startDestination = if (settings.tutorialCompleted) Routes.HOME else Routes.TUTORIAL,
     ) {
         composable(Routes.TUTORIAL) {
             TutorialScreen(

@@ -154,6 +154,15 @@ class OrderProcessingWorker(
         fun uniqueNameFor(orderId: Long): String = "process_order_$orderId"
 
         /**
+         * The order an "order ready" notification refers to, or null for any other launch.
+         *
+         * Lives here rather than in the Activity so the Activity has no bespoke parsing of its
+         * own, and so the rule that zero is not an order id is written down exactly once.
+         */
+        fun orderIdFrom(intent: Intent?): Long? =
+            intent?.getLongExtra(EXTRA_ORDER_ID, 0L)?.takeIf { it > 0L }
+
+        /**
          * Queues one order. Pressing PROCESS ORDER twice keeps the run already going rather than
          * starting a second one, which would pay the provider twice for the same photographs.
          */

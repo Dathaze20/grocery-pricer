@@ -2,10 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Receipt screenshots come in through the Android photo picker and exports go through
-         the Storage Access Framework, so no storage permission is requested. INTERNET is not
-         declared here; the ML Kit libraries add it through the manifest merger, and V2 uses it
-         to send receipt photos to the AI provider the user configured. -->
+    <!-- Grocery Pricer talks to the configured AI provider itself, so INTERNET is declared
+         here rather than inherited from a dependency. ML Kit happens to merge it in too, but
+         relying on that would mean this app's own network access depended on a library it might
+         one day drop. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Receipt screenshots come in through the Android photo picker and exports go through the
+         Storage Access Framework, so no storage permission is requested. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Only to say "order ready" when a background run finishes. Requested at runtime from

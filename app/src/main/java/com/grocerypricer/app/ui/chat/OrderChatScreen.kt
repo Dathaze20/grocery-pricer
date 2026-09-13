@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -52,6 +53,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.grocerypricer.app.data.model.ChatRole
 import com.grocerypricer.app.di.AppContainer
+import com.grocerypricer.app.ui.camera.rememberPhotoCapture
 import com.grocerypricer.app.ui.components.InfoBanner
 
 /**
@@ -84,6 +86,13 @@ fun OrderChatScreen(
     val galleryPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri -> uri?.let(viewModel::attach) }
+
+    // The one that matters in the shop: photograph what is in your hand, right now, without
+    // going through the gallery first.
+    val takePhoto = rememberPhotoCapture(
+        imageStore = container.imageStore,
+        orderId = orderId,
+    ) { file -> viewModel.attachFile(file.absolutePath) }
 
     // A new message should bring itself into view rather than waiting to be scrolled to.
     LaunchedEffect(state.messages.size) {
@@ -150,6 +159,7 @@ fun OrderChatScreen(
                 attachmentPath = state.attachmentPath,
                 sending = state.sending,
                 onClearAttachment = viewModel::clearAttachment,
+                onTakePhoto = takePhoto,
                 onPickPhoto = {
                     galleryPicker.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
@@ -264,6 +274,7 @@ private fun ChatInputBar(
     attachmentPath: String?,
     sending: Boolean,
     onClearAttachment: () -> Unit,
+    onTakePhoto: () -> Unit,
     onPickPhoto: () -> Unit,
     onSend: () -> Unit,
 ) {
@@ -280,7 +291,7 @@ private fun ChatInputBar(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "Photo attached - ask what it is",
+                        "Photo attached - ask what it is, or \"how much are these three?\"",
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -295,11 +306,19 @@ private fun ChatInputBar(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
+                // Camera first, because that is the fast path standing at the shelf.
                 IconButton(
-                    onClick = onPickPhoto,
-                    modifier = Modifier.semantics { contentDescription = "Attach a photo" },
+                    onClick = onTakePhoto,
+                    modifier = Modifier.semantics { contentDescription = "Take a photo" },
                 ) {
                     Icon(Icons.Default.PhotoCamera, contentDescription = null)
+                }
+
+                IconButton(
+                    onClick = onPickPhoto,
+                    modifier = Modifier.semantics { contentDescription = "Choose an existing photo" },
+                ) {
+                    Icon(Icons.Default.PhotoLibrary, contentDescription = null)
                 }
 
                 OutlinedTextField(

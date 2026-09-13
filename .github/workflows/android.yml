@@ -103,9 +103,14 @@ jobs:
 
       # The privacy claim in the README is only worth something if it can be checked against
       # the APK that was actually built, dependencies and all.
-      - name: Report merged manifest permissions
+      - name: Report and check merged manifest permissions
         run: |
           MANIFEST=$(find app/build/intermediates -name AndroidManifest.xml -path '*debug*' | head -1)
+          if [ -z "$MANIFEST" ]; then
+            echo "ERROR: no merged debug manifest was found to check" >&2
+            exit 1
+          fi
+
           {
             echo "### Permissions in the merged manifest"
             echo ""
@@ -114,6 +119,16 @@ jobs:
               | sed 's/android:name="//;s/"//' | sort -u
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          # The app talks to the AI provider itself, so this is not optional and must not be
+          # left to a dependency to supply. Without it every order would fail at the first
+          # request, on the device, with no clue why.
+          if ! grep -q 'android.permission.INTERNET' "$MANIFEST"; then
+            echo "ERROR: merged manifest is missing android.permission.INTERNET" >&2
+            echo "Grocery Pricer calls the AI provider directly; declare it in app/src/main/AndroidManifest.xml." >&2
+            exit 1
+          fi
+          echo "android.permission.INTERNET is present in the merged manifest."
 
       - name: Name the APK for humans
         run: |

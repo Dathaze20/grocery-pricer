@@ -31,9 +31,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -42,11 +40,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.grocerypricer.app.data.model.ImageProcessingStatus
 import com.grocerypricer.app.di.AppContainer
+import com.grocerypricer.app.ui.camera.rememberPhotoCapture
 import com.grocerypricer.app.ui.components.BigActionButton
 import com.grocerypricer.app.ui.components.InfoBanner
 import com.grocerypricer.app.ui.components.SecondaryActionButton
 import com.grocerypricer.app.ui.components.WarningBanner
-import java.io.File
 
 /**
  * Adding receipt photos to an order.
@@ -69,7 +67,6 @@ fun ReceiptImportScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val order by viewModel.order.collectAsStateWithLifecycle()
 
-    var pendingCapture by remember { mutableStateOf<File?>(null) }
 
     val maxPickable = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -83,17 +80,14 @@ fun ReceiptImportScreen(
         ActivityResultContracts.PickMultipleVisualMedia(maxPickable),
     ) { uris -> viewModel.addPickedImages(uris) }
 
-    val takePhoto = rememberLauncherForActivityResult(
-        ActivityResultContracts.TakePicture(),
-    ) { success ->
-        val file = pendingCapture
-        pendingCapture = null
-        if (success && file != null) {
-            viewModel.addCapturedPhoto(file)
-        } else {
-            file?.delete()
-        }
-    }
+    // Shares the chat screen's capture helper. It also asks for CAMERA when it has not been
+    // granted yet - this app declares that permission for the scanner, and Android then refuses
+    // an image capture without it, so a shopkeeper who never opened the scanner used to tap
+    // TAKE RECEIPT PHOTO and have nothing happen at all.
+    val takePhoto = rememberPhotoCapture(
+        imageStore = container.imageStore,
+        orderId = orderId,
+    ) { file -> viewModel.addCapturedPhoto(file) }
 
     Scaffold(
         topBar = {
@@ -118,12 +112,7 @@ fun ReceiptImportScreen(
                     "TAKE RECEIPT PHOTO",
                     icon = Icons.Default.PhotoCamera,
                     enabled = !state.busy,
-                    onClick = {
-                        val file = container.imageStore.newReceiptFile(orderId)
-                        pendingCapture = file
-                        runCatching { takePhoto.launch(container.imageStore.shareUriFor(file)) }
-                            .onFailure { pendingCapture = null }
-                    },
+                    onClick = takePhoto,
                 )
             }
             item {
