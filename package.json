@@ -1,0 +1,31 @@
+{
+  "name": "grocery-pricer",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Turn a wholesale receipt into a conversation. An offline-first PWA for a small grocery store.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "idb": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.5",
+    "vite-plugin-pwa": "^0.21.1",
+    "vitest": "^2.1.8",
+    "jsdom": "^25.0.1",
+    "fake-indexeddb": "^6.0.0"
+  }
+}
