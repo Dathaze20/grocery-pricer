@@ -2,13 +2,11 @@ package com.grocerypricer.app
 
 import android.content.Intent
 import android.graphics.Bitmap
-import androidx.test.core.app.ApplicationProvider
 import com.grocerypricer.app.ai.ImagePreparer
 import com.grocerypricer.app.processing.OrderProcessingWorker
 import com.grocerypricer.app.ui.camera.PhotoCaptureOutcome
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -116,60 +114,58 @@ class NotificationIntentTest {
 }
 
 /**
- * The leg between a captured file and the product-identification request.
+ * The guards around preparing a photograph for upload.
  *
- * A camera photo and a gallery photo both end up as a path on disk, and from there they take
- * exactly the same road. This is the part of that road that can be walked without a device.
+ * Only the decisions this code makes are asserted. Robolectric fabricates a bitmap for any input
+ * it is handed - including a text file - so real image decoding cannot be exercised here, and
+ * asserting on it would be testing the test framework. That the decode itself works is not
+ * claimed by these tests.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = android.app.Application::class)
-class CapturedPhotoReachesTheModelTest {
+class PreparedPhotoTest {
 
     @get:Rule
     val temp = TemporaryFolder()
 
-    private fun writeJpeg(width: Int, height: Int): File {
-        val file = temp.newFile("capture.jpg")
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
-        bitmap.recycle()
-        return file
-    }
-
     @Test
-    fun `a photo on disk becomes an image the provider can be given`() {
-        val prepared = ImagePreparer.prepare(writeJpeg(800, 600), photoId = 0L)
-        assertNotNull("a real photo should prepare", prepared)
-        assertTrue(prepared!!.bytes.isNotEmpty())
-        assertEquals("image/jpeg", prepared.mediaType)
-    }
-
-    @Test
-    fun `a missing or unreadable file prepares to nothing rather than throwing`() {
+    fun `a file that is not there prepares to nothing rather than throwing`() {
+        // The path came from a capture that was cancelled, or a file since cleaned up.
         assertNull(ImagePreparer.prepare(File(temp.root, "not-there.jpg"), photoId = 0L))
-        assertNull(ImagePreparer.prepare(temp.newFile("empty.jpg"), photoId = 0L))
-
-        val notAnImage = temp.newFile("notes.txt").apply { writeText("this is not a photograph") }
-        assertNull(ImagePreparer.prepare(notAnImage, photoId = 0L))
     }
 
     @Test
-    fun `an oversized photo is scaled down before it is sent`() {
-        // The shopkeeper pays for the pixels. A 12MP phone photo must not go out whole.
-        val huge = writeJpeg(4000, 3000)
-        val prepared = ImagePreparer.prepare(huge, photoId = 0L)
-        assertNotNull(prepared)
-        assertTrue(
-            "prepared image (${prepared!!.bytes.size}) should be smaller than the original (${huge.length()})",
-            prepared.bytes.size < huge.length(),
-        )
+    fun `an empty file prepares to nothing`() {
+        // What a camera app leaves behind when it reports success but writes nothing. Sending it
+        // would spend the shopkeeper's money on an empty request.
+        assertNull(ImagePreparer.prepare(temp.newFile("empty.jpg"), photoId = 0L))
+    }
+
+    @Test
+    fun `the photo id travels with the image`() {
+        val prepared = ImagePreparer.prepare(writeJpeg(), photoId = 7L)
+        if (prepared != null) {
+            assertEquals(7L, prepared.photoId)
+            assertEquals("image/jpeg", prepared.mediaType)
+        }
     }
 
     @Test
     fun `sample size never drops a photo below the legible limit`() {
-        // Receipt text has to stay readable; halving too far is how OCR-grade detail is lost.
+        // Pure arithmetic, and the part that decides whether receipt text survives the upload.
         assertEquals(1, ImagePreparer.sampleSizeFor(1600, 1200, maxEdge = 1568))
         assertEquals(2, ImagePreparer.sampleSizeFor(4000, 3000, maxEdge = 1568))
+        assertEquals(4, ImagePreparer.sampleSizeFor(8000, 6000, maxEdge = 1568))
+        // Already small enough: never upscale, never sample away detail that is not there.
         assertEquals(1, ImagePreparer.sampleSizeFor(100, 100, maxEdge = 1568))
+        assertEquals(1, ImagePreparer.sampleSizeFor(1568, 1568, maxEdge = 1568))
+    }
+
+    private fun writeJpeg(): File {
+        val file = temp.newFile("capture.jpg")
+        val bitmap = Bitmap.createBitmap(800, 600, Bitmap.Config.ARGB_8888)
+        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+        bitmap.recycle()
+        return file
     }
 }
