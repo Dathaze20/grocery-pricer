@@ -216,6 +216,12 @@ data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val tutorialCompleted: Boolean = false,
     val currentOrderId: Long = 0,
+
+    // ---- V2. Which model reads the receipts. The key itself is never here: it lives in
+    // SecureKeyStore, encrypted by the Android Keystore, and never passes through DataStore. ----
+
+    val aiProvider: String = com.grocerypricer.core.ai.AiConfig.DEFAULT_PROVIDER,
+    val aiModel: String = com.grocerypricer.core.ai.AiConfig.DEFAULT_MODEL,
 )
 
 /** Who said it. Stored as a string so the table survives adding a third kind later. */

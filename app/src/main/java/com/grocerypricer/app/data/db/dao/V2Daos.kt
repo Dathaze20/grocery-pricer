@@ -46,6 +46,9 @@ interface ChatDao {
     )
     suspend fun lastMessageWithItems(sessionId: Long): ChatMessageEntity?
 
+    @Query("SELECT * FROM chat_messages WHERE id = :id")
+    suspend fun messageById(id: Long): ChatMessageEntity?
+
     @Insert
     suspend fun insertMessage(message: ChatMessageEntity): Long
 
