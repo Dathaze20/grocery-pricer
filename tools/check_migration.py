@@ -25,12 +25,40 @@ def normalise(sql: str) -> str:
 
 
 def kotlin_sql_statements(source: str) -> list[str]:
-    """Pull every execSQL string literal out of the migration, joining concatenated pieces."""
+    """Pull every execSQL string literal out of the migration, joining concatenated pieces.
+
+    Scanned rather than regex-matched. SQL is full of parentheses - `FOREIGN KEY(`orderId`)` for
+    one - and a regex that stops at the first `)` truncates the statement inside a string literal,
+    which then reads as a schema mismatch that is really a parser bug.
+    """
     statements = []
-    for call in re.findall(r"execSQL\(\s*(.*?)\s*,?\s*\)", source, re.S):
-        pieces = re.findall(r'"((?:[^"\\]|\\.)*)"', call)
+    for match in re.finditer(r"execSQL\s*\(", source):
+        i = match.end()
+        depth = 1
+        pieces: list[str] = []
+        while i < len(source) and depth > 0:
+            c = source[i]
+            if c == '"':
+                # A string literal. Parentheses inside it are data, not structure.
+                i += 1
+                piece = []
+                while i < len(source):
+                    if source[i] == "\\" and i + 1 < len(source):
+                        piece.append(source[i + 1])
+                        i += 2
+                        continue
+                    if source[i] == '"':
+                        break
+                    piece.append(source[i])
+                    i += 1
+                pieces.append("".join(piece))
+            elif c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            i += 1
         if pieces:
-            statements.append(normalise("".join(pieces).replace('\\"', '"')))
+            statements.append(normalise("".join(pieces)))
     return statements
 
 
