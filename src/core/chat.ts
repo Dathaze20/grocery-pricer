@@ -143,12 +143,39 @@ function parseOrdinalCorrections(lower: string): CorrectionTarget[] {
   return targets;
 }
 
+/**
+ * The ways a shopkeeper asks what they stand to make.
+ *
+ * Stripped off before the rest of the sentence is used to find the product: left in place, words
+ * like "make" and "my" are matched against product names and drown out the one word that
+ * actually identifies anything.
+ */
+const PROFIT_QUESTION_LEADS = [
+  'how much do i make', 'how much will i make', 'how much do we make',
+  'how much would i make', 'what would i make', 'what will i make',
+  'what do i make', 'what do we make', 'what do i earn', 'what do i get',
+  'how much is my', "what is my", "what's my", 'whats my', 'how much',
+].sort((a, b) => b.length - a.length);
+
+const LEADING_PREPOSITION = /^(?:on|for|from|off|of)\s+/;
+
+function stripProfitLead(text: string): string {
+  let out = text.replace(/\s{2,}/g, ' ').trim();
+  for (const lead of PROFIT_QUESTION_LEADS) {
+    if (out.startsWith(lead)) {
+      out = out.slice(lead.length).trim();
+      break;
+    }
+  }
+  return out.replace(LEADING_PREPOSITION, '').trim();
+}
+
 function parseProfit(lower: string): ChatIntent | null {
   if (!lower.includes('profit') && !lower.includes('make') && !lower.includes('margin')) return null;
   const price = lastMoneyIn(lower);
   if (price === null) return null;
   const phrase = productPhrase(
-    lower.replace(/\b(profit|margin|gross)\b/g, ' ').split(' if ')[0]!.split(' at ')[0]!,
+    stripProfitLead(lower.replace(/\b(profit|margin|gross)\b/g, ' ').split(' if ')[0]!.split(' at ')[0]!),
   );
   return { kind: 'profitAt', request: phrase === null ? null : { phrase }, retailPrice: price };
 }

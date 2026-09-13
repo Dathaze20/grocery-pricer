@@ -2,6 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { Money } from '../money';
 import { ChatAnswerFormatter, parseChatIntent, type PriceAnswer } from '../chat';
 
+describe('profit questions', () => {
+  it('strips the question out of the phrase, leaving the product', () => {
+    for (const question of [
+      'what do I make on the corn oil at $5.99',
+      "what's my profit on the corn oil at $5.99",
+      'how much do i make on the corn oil at 5.99',
+      'profit on the corn oil at $5.99',
+    ]) {
+      const intent = parseChatIntent(question);
+      expect(intent.kind).toBe('profitAt');
+      // "make" and "my" are not part of any product name; left in, they drown out "corn oil".
+      expect(intent.kind === 'profitAt' && intent.request?.phrase).toBe('corn oil');
+      expect(intent.kind === 'profitAt' && intent.retailPrice.format()).toBe('$5.99');
+    }
+  });
+});
+
 describe('parseChatIntent', () => {
   function lookup(text: string) {
     const intent = parseChatIntent(text);
