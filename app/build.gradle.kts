@@ -58,6 +58,8 @@ android {
 
     buildFeatures {
         compose = true
+        // So the About screen reads the version from here rather than repeating it.
+        buildConfig = true
     }
 
     packaging {

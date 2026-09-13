@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -39,13 +40,19 @@ import kotlinx.coroutines.launch
 fun GroceryPricerNavHost(
     container: AppContainer,
     settings: AppSettings,
+    /** Set when the app was opened from an "order ready" notification. */
+    openOrderId: Long? = null,
 ) {
     val navController = rememberNavController()
     val scope = rememberCoroutineScope()
 
     NavHost(
         navController = navController,
-        startDestination = if (settings.tutorialCompleted) Routes.HOME else Routes.TUTORIAL,
+        startDestination = when {
+            openOrderId != null -> Routes.chat(openOrderId)
+            settings.tutorialCompleted -> Routes.HOME
+            else -> Routes.TUTORIAL
+        },
     ) {
         composable(Routes.TUTORIAL) {
             TutorialScreen(
@@ -113,7 +120,13 @@ fun GroceryPricerNavHost(
         ) { entry ->
             val orderId = entry.arguments?.getLong(Routes.ARG_ORDER_ID) ?: 0L
             val processingViewModel: ProcessingViewModel =
-                viewModel(factory = ProcessingViewModel.factory(container, orderId))
+                viewModel(
+                    factory = ProcessingViewModel.factory(
+                        container = container,
+                        orderId = orderId,
+                        appContext = LocalContext.current.applicationContext,
+                    ),
+                )
             val processingState by processingViewModel.state.collectAsStateWithLifecycle()
 
             // The user pressed one button; they should not have to press another to see the
@@ -277,6 +290,7 @@ fun GroceryPricerNavHost(
                 container = container,
                 settings = settings,
                 onPricingRules = { navController.navigate(Routes.RULES) },
+                onAiSetup = { navController.navigate(Routes.AI_SETUP) },
                 onBack = { navController.popBackStack() },
             )
         }

@@ -2,11 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Only the camera is needed. Receipt screenshots come in through the Android photo
-         picker and exports go through the Storage Access Framework, so no storage
-         permission is requested. -->
+    <!-- Receipt screenshots come in through the Android photo picker and exports go through
+         the Storage Access Framework, so no storage permission is requested. INTERNET is not
+         declared here; the ML Kit libraries add it through the manifest merger, and V2 uses it
+         to send receipt photos to the AI provider the user configured. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Only to say "order ready" when a background run finishes. Requested at runtime from
+         Android 13, and the app works normally if it is declined: the order is still there. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />

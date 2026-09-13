@@ -12,6 +12,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.grocerypricer.app.data.model.AppSettings
 import com.grocerypricer.app.di.AppContainer
+import com.grocerypricer.app.processing.OrderProcessingWorker
 import com.grocerypricer.app.ui.navigation.GroceryPricerNavHost
 import com.grocerypricer.app.ui.theme.GroceryPricerTheme
 
@@ -19,6 +20,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // A notification saying an order is ready should land on that order, not on the
+        // home screen with the shopkeeper having to find it again.
+        val openOrderId = intent?.getLongExtra(OrderProcessingWorker.EXTRA_ORDER_ID, 0L)
+            ?.takeIf { it > 0L }
+
         setContent {
             val container = rememberAppContainer()
             val settings by container.settingsRepository.settings
@@ -29,7 +35,11 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier,
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    GroceryPricerNavHost(container = container, settings = settings)
+                    GroceryPricerNavHost(
+                        container = container,
+                        settings = settings,
+                        openOrderId = openOrderId,
+                    )
                 }
             }
         }
