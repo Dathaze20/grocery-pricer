@@ -1,13 +1,24 @@
 # Grocery Pricer
 
-Turn a wholesale receipt into shelf prices, without retyping anything.
+**Grocery Pricer turns a wholesale receipt into a conversation.**
 
-Grocery Pricer is an offline Android app for a small neighbourhood deli or grocery store. You
-photograph the receipt from a Jetro / Restaurant Depot run, it reconstructs the order and works out
-what each individual item really cost after case discounts, and then you walk the store scanning
-barcodes and approving prices.
+Photograph your Jetro / Restaurant Depot receipts once and press one button. Grocery Pricer reads
+every photo, works out what each individual item really cost after case discounts, and opens the
+order so you can just ask about it.
 
-Everything stays on the phone. No account, no server, no API key, no internet connection needed.
+> **You:** How much is the Carnation milk?
+>
+> **Grocery Pricer:**
+> Carnation Evaporated Milk 12 oz
+> $4.20 → $7.99
+
+Ask what anything cost. Ask what you should charge. Ask how many are in the case. Photograph a
+product you are holding and ask what it is. Tell it the price you actually put on the shelf, and it
+remembers for next time.
+
+No spreadsheet. No approving 150 rows before you can use it.
+
+**Photos → one button → ask questions.**
 
 ---
 
@@ -17,9 +28,26 @@ One wholesale order can be 150 products. Working out the true cost of each one b
 divided by units per case, minus a flyer discount that may or may not apply to the whole case - and
 then deciding a shelf price for each is an evening's work, and it is easy to get wrong.
 
-The receipt already has the numbers. The problem is that they are on paper, the discounts are on
-separate lines, and the printed "unit" price is the price *before* the discount. Grocery Pricer does
-the arithmetic, shows its working, and gets out of the way.
+The receipt already has the numbers. The problem is that they are on paper, the discounts sit on
+separate lines, and the printed "unit" price is the price *before* the discount.
+
+Version 1 read the receipt and then made you check its work: 150 rows to scroll, confirm and save
+before the app was any use. That is a different evening's work, not less of one. Version 2 does the
+reading and the arithmetic and then waits to be asked a question, which is what you actually wanted
+standing in the shop with a box in your hand.
+
+### What is different in 2.0
+
+| | Version 1 | Version 2 |
+|---|---|---|
+| After importing photos | Review and approve every row | Ask a question |
+| Finding a price | Scan the barcode | Say the name, or photograph it |
+| Reading the receipt | On-device OCR only | A multimodal model, with OCR as evidence |
+| Uncertain rows | A list of 47 to work through | Mentioned once, asked about only if they matter |
+| Home screen | Six financial stat cards | Two buttons |
+| Who does the arithmetic | Kotlin | **Still Kotlin** |
+
+That last row is the one that does not change, and section *How pricing works* below spells out why.
 
 ---
 
@@ -159,23 +187,57 @@ of ten-thousandths of a dollar. No floating point touches a price.
 
 ## Privacy
 
-- Receipt photos, product photos, costs and prices stay on the device.
-- Nothing is uploaded. There is no analytics, no crash reporting, no account, and no server.
-- Text recognition and barcode scanning run entirely on the phone; the models are bundled in the APK.
-- This app's own manifest declares exactly two permissions. `CAMERA` is requested at runtime, only
-  when you first open the scanner. `VIBRATE` is a normal permission that needs no prompt; it is used
-  solely for the buzz confirming a barcode scan, and can be switched off in Settings.
-- The installed APK, however, holds **four** permissions. The ML Kit libraries add `INTERNET` and
-  `ACCESS_NETWORK_STATE` to the merged manifest, and the manifest merger cannot be talked out of it
-  without removing the scanner. Both are normal permissions with no prompt, and this app never opens
-  a socket: text recognition and barcode scanning use the models bundled in the APK, and there is no
-  networking code, no HTTP client, and no analytics or crash-reporting SDK anywhere in the project.
-- Rather than ask you to take that on trust, every CI run greps the *merged* manifest and prints the
-  permission list into the build log and the run summary, so what the APK actually asks for is on
-  the record next to the APK itself.
-- Gallery imports use the Android photo picker and exports use the Storage Access Framework, so no
-  storage permission is needed either.
-- Data leaves the device only when *you* export a CSV or a backup to a location you choose.
+**Version 2 sends data off the phone. Version 1 did not. This section says exactly what and when.**
+
+### What leaves the phone
+
+- **Receipt photographs**, when you press PROCESS ORDER. They go to the AI provider you configured,
+  along with the on-device OCR text, so it can read the order.
+- **A product photograph**, when you attach one to the conversation and ask about it.
+- **A short shortlist of product names from the current order**, when a typed question is ambiguous
+  enough to need the model. Never the whole order, and never your prices - the model is asked which
+  product you meant, not what anything costs.
+
+That is the complete list.
+
+### What never leaves the phone
+
+- Your costs, your shelf prices, and your price history.
+- The database, the receipt images once processed, your backups and your CSV exports.
+- Your API key. It is encrypted by the Android Keystore, it is sent only to the provider it
+  authenticates to, and it is never written to a log.
+
+There is no analytics, no crash reporting, no advertising, no account, and no cloud sync of your
+data. Nothing is uploaded on a schedule or in the background - only when you press the button.
+
+### Using it without AI
+
+An order that has already been processed stays fully usable offline: product search, known costs,
+known prices, barcode lookup, price history, the pricing engine, and any question the on-device
+parser can answer. Only reading new receipt photos, understanding product photographs and the more
+open-ended questions need a connection.
+
+### Permissions
+
+This app's own manifest declares two permissions. `CAMERA` is requested at runtime, only when you
+first open the scanner. `VIBRATE` needs no prompt and is used for the buzz confirming a scan.
+
+The installed APK holds **four**: the ML Kit libraries add `INTERNET` and `ACCESS_NETWORK_STATE`
+through the manifest merger. In version 1 nothing used them. In version 2 `INTERNET` is used, for
+exactly what is listed above.
+
+Every CI run greps the *merged* manifest and prints the permission list into the build log and run
+summary, so what the APK actually asks for is on the record next to the APK itself.
+
+Gallery imports use the Android photo picker and exports use the Storage Access Framework, so no
+storage permission is needed.
+
+### The cost
+
+The AI provider is billed to your own API key, by the provider, not by this app. Reading an order
+is the expensive part and happens once per order; after that most questions are answered on the
+phone and cost nothing. The app deliberately searches locally first, sends small batches rather than
+whole orders, and scales photographs down before uploading them.
 
 ---
 
