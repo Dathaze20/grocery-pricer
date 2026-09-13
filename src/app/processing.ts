@@ -2,7 +2,7 @@ import { aiErrorMessage, isFatalForRun, isTransient, OrderImageType, type AiErro
 import { mergeExtractions, validateExtraction, ExtractionIssue, type ValidatedItem } from '../core/ai-validate';
 import { CostCalculator } from '../core/cost';
 import { Money } from '../core/money';
-import { Category, ItemConfidence, categoryFromName, guessCategory, makeDiscount, type ReceiptDiscount } from '../core/models';
+import { ItemConfidence, categoryFromName, guessCategory, makeDiscount, type ReceiptDiscount } from '../core/models';
 import { DiscountScope } from '../core/models';
 import { PricingEngine, defaultPricingRules, type PricingRules } from '../core/pricing';
 import type { AiProvider, IdentifiedImage } from '../ai/provider';
@@ -61,7 +61,7 @@ export async function processOrder(
 
   // Sorting the photos first means a product snapshot in the middle of a receipt roll does not
   // get read as though it were a line of printed figures.
-  const classified = await classify(provider, parts, photos, options);
+  const classified = await classify(provider, parts, photos);
   const paperwork = parts.filter((part) => classified.get(part.photoId) !== OrderImageType.PRODUCT_PHOTO);
   if (paperwork.length === 0) {
     return fail(repo, orderId, null, 'None of those photos look like a receipt or a case label.');
@@ -139,7 +139,6 @@ async function classify(
   provider: AiProvider,
   parts: readonly IdentifiedImage[],
   photos: readonly StoredPhoto[],
-  _options: ProcessOptions,
 ): Promise<Map<number, OrderImageType>> {
   const known = new Map<number, OrderImageType>();
   const unknown = parts.filter((part) => {
@@ -314,5 +313,3 @@ function describeIssue(issue: ExtractionIssue): string {
       return issue.toLowerCase().replace(/_/g, ' ');
   }
 }
-
-export { Category };

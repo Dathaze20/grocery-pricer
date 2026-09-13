@@ -10,6 +10,8 @@
 
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const BASE = 'http://127.0.0.1:4173/grocery-pricer/';
@@ -53,7 +55,7 @@ async function main() {
     await waitForServer();
 
     const browser = await chromium.launch({
-      executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+      ...(chromeIn('/opt/pw-browsers') ?? {}),
       args: ['--no-sandbox'],
     });
     // A Samsung A17 in portrait, which is what this is actually used on.
@@ -212,6 +214,20 @@ async function main() {
     console.log('failed: ' + failures.join(', '));
     process.exit(1);
   }
+}
+
+/**
+ * Uses a pre-installed Chromium if this machine has one.
+ *
+ * Some environments ship browsers under PLAYWRIGHT_BROWSERS_PATH and forbid downloading more;
+ * CI installs its own and knows where it is. Returning nothing lets Playwright decide.
+ */
+function chromeIn(root) {
+  if (!existsSync(root)) return null;
+  const dir = readdirSync(root).find((name) => name.startsWith('chromium-'));
+  if (dir === undefined) return null;
+  const binary = join(root, dir, 'chrome-linux', 'chrome');
+  return existsSync(binary) ? { executablePath: binary } : null;
 }
 
 async function waitForServer() {
