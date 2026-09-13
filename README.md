@@ -20,7 +20,7 @@ Android, iPhone, iPad, and any desktop browser.
 Gemini is allowed to say what characters are printed on a receipt and which product a sentence
 refers to. It is never allowed to work out a cost, propose a price, or fill in a missing number.
 Every figure the app shows was either read back out of its own database or computed by
-`src/core/` — deterministic TypeScript with 170+ tests behind it.
+`src/core/` — deterministic TypeScript with 220 tests behind it.
 
 Concretely:
 
@@ -114,7 +114,7 @@ the calls. Do not ship the browser-key model to strangers.
 npm install
 npm run dev          # local dev server
 npm run typecheck
-npm test             # 170+ unit tests, no key and no network needed
+npm test             # 220 unit tests, no key and no network needed
 npm run build        # produces dist/
 npm run test:browser # drives the built site in Chromium, Gemini intercepted
 ```
