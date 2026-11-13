@@ -104,8 +104,13 @@ jobs:
       - name: Build the PWA
         run: npm run build
 
+      # enablement creates the Pages site on first deploy, so nobody has to find
+      # the setting by hand. Without it the very first run fails with "Get Pages
+      # site failed" and the link 404s with nothing explaining why.
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Upload the site
         uses: actions/upload-pages-artifact@v3
