@@ -104,9 +104,11 @@ jobs:
       - name: Build the PWA
         run: npm run build
 
-      # enablement creates the Pages site on first deploy, so nobody has to find
-      # the setting by hand. Without it the very first run fails with "Get Pages
-      # site failed" and the link 404s with nothing explaining why.
+      # enablement asks GitHub to create the Pages site if it does not exist. It is
+      # not enough on its own: the Actions token is usually refused ("Resource not
+      # accessible by integration"), so Pages must be switched to "GitHub Actions"
+      # once by hand under Settings - Pages. This keeps the first deploy after that
+      # from needing anything else, and no-ops once the site exists.
       - name: Configure Pages
         uses: actions/configure-pages@v5
         with:

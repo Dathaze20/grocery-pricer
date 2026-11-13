@@ -128,7 +128,9 @@ spends nobody's quota. The browser smoke test intercepts every request to
 The included workflow (`.github/workflows/pwa.yml`) builds on every push and deploys the default
 branch to GitHub Pages. To turn it on:
 
-1. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
+1. **Settings → Pages → Build and deployment → Source: GitHub Actions.** This step cannot be
+   automated: GitHub refuses to let a workflow's own token create the Pages site, so until it is
+   done the deploy fails on `Create Pages site failed` and the link returns 404.
 2. Push to the default branch. The workflow builds and deploys.
 3. The app is then at `https://<user>.github.io/grocery-pricer/` — that is the link to open on the
    phone and install.
