@@ -9,7 +9,9 @@ import { hasKey } from '../services';
 export function Home(props: { repo: Repository; go: (screen: Screen) => void }): JSX.Element {
   const { repo, go } = props;
   const [orders, setOrders] = useState<StoredOrder[]>([]);
-  const [keyed, setKeyed] = useState(true);
+  // null until the stored key has been looked up. Starting at `true` would hide the setup
+  // prompt for a moment on every launch, including the one launch where it matters.
+  const [keyed, setKeyed] = useState<boolean | null>(null);
 
   useEffect(() => {
     void repo.recentOrders(15).then(setOrders);
@@ -31,7 +33,7 @@ export function Home(props: { repo: Repository; go: (screen: Screen) => void }):
         action={{ label: 'Settings', onClick: () => go({ kind: 'settings' }) }}
       />
       <main>
-        {!keyed && (
+        {keyed === false && (
           <button type="button" className="notice warn" onClick={() => go({ kind: 'settings' })}>
             One-time setup: add your free Gemini key before the first order.
           </button>

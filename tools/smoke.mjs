@@ -68,6 +68,7 @@ async function main() {
     const page = await context.newPage();
 
     const calls = [];
+    const served = [];
     await page.route('https://generativelanguage.googleapis.com/**', async (route) => {
       const url = route.request().url();
       calls.push(url);
@@ -75,6 +76,7 @@ async function main() {
       const prompt = JSON.stringify(post?.contents ?? '');
 
       if (prompt.includes('"images"') || prompt.includes('RECEIPT:')) {
+        served.push('classification');
         await route.fulfill(
           geminiReply({
             images: [{ photoId: 1, type: 'RECEIPT', confidence: 0.95 }],
@@ -82,6 +84,7 @@ async function main() {
         );
         return;
       }
+      served.push('extraction');
       await route.fulfill(
         geminiReply({
           supplier: 'JETRO',
@@ -112,17 +115,21 @@ async function main() {
     await page.goto(BASE, { waitUntil: 'networkidle' });
 
     check('the app loads', await page.locator('text=NEW ORDER').isVisible());
-    check(
-      'it asks for a key before the first order',
-      await page.locator('text=/add your free Gemini key/i').isVisible(),
-    );
+    // Waited for rather than read once: the prompt appears when the stored key has actually
+    // been looked up, so asserting it immediately would pass before anything was checked.
+    await page.waitForSelector('text=/add your free Gemini key/i', { timeout: 10000 });
+    check('it asks for a key before the first order', true);
 
     // --- settings ---------------------------------------------------------
+    // Typed the instant the screen appears, on purpose. Settings loads the stored key from
+    // IndexedDB asynchronously, and on a slow device that read lands after the user has pasted
+    // their key: it must not overwrite what they typed, and Save must not then store the blank.
     await page.click('text=Settings');
     await page.fill('#key', 'AIza-test-key');
     await page.click('button:has-text("Save")');
     await page.waitForTimeout(200);
     check('the key saves', (await page.locator('button:has-text("Saved")').count()) === 1);
+    check('the typed key survived the stored one loading', (await page.inputValue('#key')) === 'AIza-test-key');
 
     const link = page.locator('a:has-text("Get a free Gemini API key")');
     check(
@@ -131,6 +138,28 @@ async function main() {
     );
 
     await page.click('button:has-text("Back")');
+    await page.click('text=Settings');
+    check(
+      'the key is still there when settings is reopened',
+      await holdsValue(page, '#key', 'AIza-test-key'),
+      `field held "${await page.inputValue('#key')}"`,
+    );
+
+    // Saving with the box empty must not delete a working key - that is what the Remove
+    // button is for, and a blank field is usually a field that has not loaded yet.
+    await page.fill('#key', '');
+    await page.click('button:has-text("Save")');
+    await page.waitForTimeout(200);
+    await page.click('button:has-text("Back")');
+    await page.click('text=Settings');
+    check(
+      'saving an empty box does not throw the key away',
+      await holdsValue(page, '#key', 'AIza-test-key'),
+      `field held "${await page.inputValue('#key')}"`,
+    );
+
+    await page.click('button:has-text("Back")');
+    await page.waitForTimeout(300);
     check(
       'the setup prompt goes away once a key is stored',
       (await page.locator('text=/add your free Gemini key/i').count()) === 0,
@@ -149,7 +178,7 @@ async function main() {
     check('a photographed receipt appears', (await page.locator('.photo').count()) === 1);
 
     await page.click('text=PROCESS ORDER');
-    await page.waitForSelector('.bubble.app', { timeout: 20000 });
+    await waitOrExplain(page, '.bubble.app', { served, errors });
     const opening = await page.locator('.bubble.app').first().innerText();
     check('the order is summarised', opening.includes('1 product'), opening);
     check('the total is the app\'s own arithmetic', opening.includes('$24.00'), opening);
@@ -228,6 +257,42 @@ function chromeIn(root) {
   if (dir === undefined) return null;
   const binary = join(root, dir, 'chrome-linux', 'chrome');
   return existsSync(binary) ? { executablePath: binary } : null;
+}
+
+/**
+ * Waits for a selector, and if it never arrives, reports what the page was saying.
+ *
+ * The app writes the reason it could not process an order into a notice on screen. Without this,
+ * a failure here is a bare timeout: true, useless, and worth a whole CI run to turn into a fact.
+ */
+/** True once a field holds the expected value. The screen fills it from storage, so give it a moment. */
+async function holdsValue(page, selector, expected, timeout = 5000) {
+  try {
+    await page.waitForFunction(
+      ([sel, want]) => document.querySelector(sel)?.value === want,
+      [selector, expected],
+      { timeout },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitOrExplain(page, selector, context, timeout = 20000) {
+  try {
+    await page.waitForSelector(selector, { timeout });
+  } catch (error) {
+    const notice = await page.locator('.notice').allInnerTexts().catch(() => []);
+    const visible = await page.locator('main').innerText().catch(() => '(no main element)');
+    console.log('\n--- the page never showed ' + selector + ' ---');
+    console.log('notices on screen: ' + (notice.length > 0 ? notice.join(' | ') : '(none)'));
+    console.log('gemini calls served: ' + (context.served.length > 0 ? context.served.join(', ') : '(none)'));
+    console.log('console errors: ' + (context.errors.length > 0 ? context.errors.join(' | ') : '(none)'));
+    console.log('page text: ' + visible.replace(/\s+/g, ' ').slice(0, 600));
+    console.log('--- end ---\n');
+    throw error;
+  }
 }
 
 async function waitForServer() {
