@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DEFAULT_GEMINI_MODEL, GEMINI_API_KEY_URL, SUGGESTED_GEMINI_MODELS } from '../../ai/model';
 import type { Repository } from '../../data/repository';
 import type { Screen } from '../App';
@@ -17,14 +17,25 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   const [model, setModel] = useState('');
   const [reveal, setReveal] = useState(false);
   const [saved, setSaved] = useState(false);
+  // True once the user has touched a field. Reading the stored values takes a moment on a cold
+  // database, and someone who pastes their key in that moment must not have it wiped from under
+  // them - which looks exactly like the app losing the key they just pasted.
+  const edited = useRef(false);
 
   useEffect(() => {
-    void repo.apiKey().then((stored) => setKey(stored ?? ''));
-    void repo.model().then((stored) => setModel(stored ?? ''));
+    void repo.apiKey().then((stored) => {
+      if (!edited.current) setKey(stored ?? '');
+    });
+    void repo.model().then((stored) => {
+      if (!edited.current) setModel(stored ?? '');
+    });
   }, [repo]);
 
   const save = useCallback(async () => {
-    await repo.setApiKey(key);
+    // An empty box is not an instruction to forget the key: pressing Save on a field that has
+    // not loaded yet, or was cleared by accident, would silently delete a working key. Removing
+    // it is deliberate, and has its own button.
+    if (key.trim().length > 0) await repo.setApiKey(key);
     await repo.setModel(model);
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
@@ -57,7 +68,10 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
             autoComplete="off"
             spellCheck={false}
             placeholder="AIza…"
-            onChange={(event) => setKey(event.target.value)}
+            onChange={(event) => {
+              edited.current = true;
+              setKey(event.target.value);
+            }}
           />
           <button type="button" className="secondary" onClick={() => setReveal(!reveal)}>
             {reveal ? 'Hide the key' : 'Show the key'}
@@ -70,7 +84,10 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
             value={model}
             spellCheck={false}
             placeholder={DEFAULT_GEMINI_MODEL}
-            onChange={(event) => setModel(event.target.value)}
+            onChange={(event) => {
+              edited.current = true;
+              setModel(event.target.value);
+            }}
           />
           <p className="muted">
             Leave this empty unless Google retires a model. Suggested: {SUGGESTED_GEMINI_MODELS.join(', ')}.
@@ -85,6 +102,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
               type="button"
               className="secondary danger"
               onClick={() => {
+                edited.current = true;
                 setKey('');
                 void repo.setApiKey(null);
               }}

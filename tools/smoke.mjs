@@ -115,17 +115,21 @@ async function main() {
     await page.goto(BASE, { waitUntil: 'networkidle' });
 
     check('the app loads', await page.locator('text=NEW ORDER').isVisible());
-    check(
-      'it asks for a key before the first order',
-      await page.locator('text=/add your free Gemini key/i').isVisible(),
-    );
+    // Waited for rather than read once: the prompt appears when the stored key has actually
+    // been looked up, so asserting it immediately would pass before anything was checked.
+    await page.waitForSelector('text=/add your free Gemini key/i', { timeout: 10000 });
+    check('it asks for a key before the first order', true);
 
     // --- settings ---------------------------------------------------------
+    // Typed the instant the screen appears, on purpose. Settings loads the stored key from
+    // IndexedDB asynchronously, and on a slow device that read lands after the user has pasted
+    // their key: it must not overwrite what they typed, and Save must not then store the blank.
     await page.click('text=Settings');
     await page.fill('#key', 'AIza-test-key');
     await page.click('button:has-text("Save")');
     await page.waitForTimeout(200);
     check('the key saves', (await page.locator('button:has-text("Saved")').count()) === 1);
+    check('the typed key survived the stored one loading', (await page.inputValue('#key')) === 'AIza-test-key');
 
     const link = page.locator('a:has-text("Get a free Gemini API key")');
     check(
@@ -134,6 +138,28 @@ async function main() {
     );
 
     await page.click('button:has-text("Back")');
+    await page.click('text=Settings');
+    check(
+      'the key is still there when settings is reopened',
+      await holdsValue(page, '#key', 'AIza-test-key'),
+      `field held "${await page.inputValue('#key')}"`,
+    );
+
+    // Saving with the box empty must not delete a working key - that is what the Remove
+    // button is for, and a blank field is usually a field that has not loaded yet.
+    await page.fill('#key', '');
+    await page.click('button:has-text("Save")');
+    await page.waitForTimeout(200);
+    await page.click('button:has-text("Back")');
+    await page.click('text=Settings');
+    check(
+      'saving an empty box does not throw the key away',
+      await holdsValue(page, '#key', 'AIza-test-key'),
+      `field held "${await page.inputValue('#key')}"`,
+    );
+
+    await page.click('button:has-text("Back")');
+    await page.waitForTimeout(300);
     check(
       'the setup prompt goes away once a key is stored',
       (await page.locator('text=/add your free Gemini key/i').count()) === 0,
@@ -239,6 +265,20 @@ function chromeIn(root) {
  * The app writes the reason it could not process an order into a notice on screen. Without this,
  * a failure here is a bare timeout: true, useless, and worth a whole CI run to turn into a fact.
  */
+/** True once a field holds the expected value. The screen fills it from storage, so give it a moment. */
+async function holdsValue(page, selector, expected, timeout = 5000) {
+  try {
+    await page.waitForFunction(
+      ([sel, want]) => document.querySelector(sel)?.value === want,
+      [selector, expected],
+      { timeout },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function waitOrExplain(page, selector, context, timeout = 20000) {
   try {
     await page.waitForSelector(selector, { timeout });
