@@ -68,6 +68,7 @@ async function main() {
     const page = await context.newPage();
 
     const calls = [];
+    const served = [];
     await page.route('https://generativelanguage.googleapis.com/**', async (route) => {
       const url = route.request().url();
       calls.push(url);
@@ -75,6 +76,7 @@ async function main() {
       const prompt = JSON.stringify(post?.contents ?? '');
 
       if (prompt.includes('"images"') || prompt.includes('RECEIPT:')) {
+        served.push('classification');
         await route.fulfill(
           geminiReply({
             images: [{ photoId: 1, type: 'RECEIPT', confidence: 0.95 }],
@@ -82,6 +84,7 @@ async function main() {
         );
         return;
       }
+      served.push('extraction');
       await route.fulfill(
         geminiReply({
           supplier: 'JETRO',
@@ -149,7 +152,7 @@ async function main() {
     check('a photographed receipt appears', (await page.locator('.photo').count()) === 1);
 
     await page.click('text=PROCESS ORDER');
-    await page.waitForSelector('.bubble.app', { timeout: 20000 });
+    await waitOrExplain(page, '.bubble.app', { served, errors });
     const opening = await page.locator('.bubble.app').first().innerText();
     check('the order is summarised', opening.includes('1 product'), opening);
     check('the total is the app\'s own arithmetic', opening.includes('$24.00'), opening);
@@ -228,6 +231,28 @@ function chromeIn(root) {
   if (dir === undefined) return null;
   const binary = join(root, dir, 'chrome-linux', 'chrome');
   return existsSync(binary) ? { executablePath: binary } : null;
+}
+
+/**
+ * Waits for a selector, and if it never arrives, reports what the page was saying.
+ *
+ * The app writes the reason it could not process an order into a notice on screen. Without this,
+ * a failure here is a bare timeout: true, useless, and worth a whole CI run to turn into a fact.
+ */
+async function waitOrExplain(page, selector, context, timeout = 20000) {
+  try {
+    await page.waitForSelector(selector, { timeout });
+  } catch (error) {
+    const notice = await page.locator('.notice').allInnerTexts().catch(() => []);
+    const visible = await page.locator('main').innerText().catch(() => '(no main element)');
+    console.log('\n--- the page never showed ' + selector + ' ---');
+    console.log('notices on screen: ' + (notice.length > 0 ? notice.join(' | ') : '(none)'));
+    console.log('gemini calls served: ' + (context.served.length > 0 ? context.served.join(', ') : '(none)'));
+    console.log('console errors: ' + (context.errors.length > 0 ? context.errors.join(' | ') : '(none)'));
+    console.log('page text: ' + visible.replace(/\s+/g, ' ').slice(0, 600));
+    console.log('--- end ---\n');
+    throw error;
+  }
 }
 
 async function waitForServer() {
