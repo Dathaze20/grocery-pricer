@@ -332,6 +332,28 @@ async function main() {
       (await page.locator('button[aria-label^="Save the price"]').count()) === 0,
     );
 
+    // A typed debt is refused, not quietly clamped to zero - that used to save a free product.
+    await priceBox.fill('-3.00');
+    check(
+      'a negative price offers nothing to save',
+      (await page.locator('button[aria-label^="Save the price"]').count()) === 0,
+    );
+    check(
+      'and says a price cannot be negative',
+      await page.locator('text=/A price cannot be negative/').isVisible(),
+    );
+
+    // Finer than a cent is refused rather than rounded behind the owner's back.
+    await priceBox.fill('6.2549');
+    check(
+      'an amount finer than a cent offers nothing to save',
+      (await page.locator('button[aria-label^="Save the price"]').count()) === 0,
+    );
+    check(
+      'and says prices go to the cent',
+      await page.locator('text=/two decimal places at most/').isVisible(),
+    );
+
     await page.locator('button:has-text("Cancel")').first().click();
     check('cancel puts the suggestion back', (await priceBox.inputValue()) === '4.99');
 

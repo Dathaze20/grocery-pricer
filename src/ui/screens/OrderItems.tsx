@@ -154,8 +154,6 @@ function ItemRow(props: {
       : null;
 
   const dirty = edit.dirty;
-  const typing = edit.state === 'incomplete';
-  const blank = edit.state === 'blank' && dirty;
   const unapproved = approved === null && draft !== null && !dirty;
 
   // Unsaved work, of any kind: a changed price, a half-typed one, an emptied box, or an exact
@@ -294,8 +292,11 @@ function ItemRow(props: {
             </button>
           </div>
 
-          {typing && <p className="notice warn">That is not a price yet.</p>}
-          {blank && <p className="notice warn">Type a price, or press Cancel to put it back.</p>}
+          {edit.message !== null && (
+            <p className="notice warn" role="alert">
+              {edit.message}
+            </p>
+          )}
 
           {edit.canSave ? (
             <div className="row">
