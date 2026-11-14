@@ -1,313 +1,610 @@
 /*
  * Built for one thumb on a phone held in a shop.
  *
- * Everything tappable is at least 48px, the type stays large enough to read under bad lighting
- * with a receipt in the other hand, and the primary action of every screen is the biggest thing
- * on it. Desktop gets the same layout in a column, because the shop's till is not the point.
+ * Three rules shape everything below.
+ *
+ * Type is sized in rem, never px, so that Android's font-size setting actually moves it. A
+ * shopkeeper who has turned text up has done so for a reason, and an interface that ignores it
+ * is unusable to them.
+ *
+ * Size carries meaning. When every control is the same weight, nothing is: the eye has no
+ * entry point. The camera is the largest thing on its screen, the money is the boldest thing
+ * on a row, and everything else gets out of the way.
+ *
+ * Space is a scale, not a guess. Four steps, used consistently, do more for how finished
+ * something looks than any amount of decoration.
  */
 
 :root {
-  --green: #14532d;
-  --green-dark: #0d3b20;
-  --green-light: #dcece2;
-  --cream: #faf9f6;
-  --ink: #1a1a1a;
-  --muted: #5c5c5c;
-  --line: #d9d6cf;
-  --warn: #8a5a00;
-  --warn-bg: #fdf3dd;
-  --bad: #8a1f11;
-  --bad-bg: #fbe9e7;
-  --good: #14532d;
-  --radius: 14px;
-  --tap: 52px;
+  color-scheme: light;
+
+  --brand: #14532d;
+  --brand-ink: #0b3b1f;
+  --brand-soft: #e8f1ec;
+  --brand-line: #c3d8cb;
+
+  --paper: #f7f6f2;
+  --surface: #ffffff;
+
+  --ink: #16191c;
+  --ink-2: #565c62;
+  --ink-3: #868d93;
+  --line: rgba(22, 25, 28, 0.1);
+
+  --warn: #7c5100;
+  --warn-bg: #fdf4de;
+  --bad: #912819;
+  --bad-bg: #fbeae7;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-pill: 999px;
+
+  --tap: 48px;
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 20, 0.06), 0 1px 3px rgba(16, 24, 20, 0.04);
+  --shadow-2: 0 8px 24px rgba(16, 24, 20, 0.12);
 }
 
 * { box-sizing: border-box; }
 
-html, body, #root {
-  height: 100%;
-  margin: 0;
-}
-
-body {
-  background: var(--cream);
-  color: var(--ink);
-  font: 17px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+html {
+  /* No px here on purpose: 1rem stays whatever the person's browser and Android say it is. */
+  font-size: 100%;
   -webkit-text-size-adjust: 100%;
 }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 2px;
+}
+
+/* --- layout ------------------------------------------------------------- */
 
 .app {
   display: flex;
   flex-direction: column;
   min-height: 100%;
   max-width: 640px;
-  margin: 0 auto;
-  background: var(--cream);
+  margin-inline: auto;
+  background: var(--paper);
 }
+
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  padding-bottom: calc(var(--sp-6) + env(safe-area-inset-bottom));
+}
+
+.stack { display: flex; flex-direction: column; gap: var(--sp-3); }
+.row { display: flex; align-items: center; gap: var(--sp-2); }
+.grow { flex: 1; min-width: 0; }
+.center { text-align: center; }
+
+/* --- type --------------------------------------------------------------- */
+
+.t-section {
+  margin: var(--sp-2) 0 0;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.t-title { font-size: 1.0625rem; font-weight: 650; line-height: 1.3; }
+.t-sub { font-size: 0.9375rem; color: var(--ink-2); }
+.muted { font-size: 0.9375rem; color: var(--ink-2); margin: 0; }
+.t-cap { font-size: 0.8125rem; color: var(--ink-3); }
+
+.price { font-variant-numeric: tabular-nums; }
 
 /* --- header ------------------------------------------------------------- */
 
 .topbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: max(10px, env(safe-area-inset-top)) 14px 10px;
-  background: var(--green);
-  color: var(--cream);
   position: sticky;
   top: 0;
   z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  padding-top: calc(var(--sp-2) + env(safe-area-inset-top));
+  background: var(--brand);
+  color: #fff;
 }
 
 .topbar h1 {
-  font-size: 19px;
-  margin: 0;
   flex: 1;
-  font-weight: 600;
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
 }
+
+.topbar .wordmark { font-size: 1.125rem; font-weight: 700; letter-spacing: -0.01em; }
 
 .topbar button {
-  background: transparent;
-  border: 1px solid rgba(250, 249, 246, 0.4);
-  color: var(--cream);
-  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   min-height: 40px;
-  padding: 0 12px;
-  font-size: 15px;
-}
-
-/* --- layout ------------------------------------------------------------- */
-
-main {
-  flex: 1;
-  padding: 16px 14px calc(20px + env(safe-area-inset-bottom));
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.stack { display: flex; flex-direction: column; gap: 12px; }
-.row { display: flex; gap: 10px; align-items: center; }
-.grow { flex: 1; }
-.muted { color: var(--muted); font-size: 15px; }
-.center { text-align: center; }
-
-/* --- buttons ------------------------------------------------------------ */
-
-button, .button {
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: #fff;
   font: inherit;
-  min-height: var(--tap);
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
-  background: #fff;
-  color: var(--ink);
-  padding: 0 16px;
+  font-size: 0.9375rem;
   cursor: pointer;
 }
 
-button:disabled { opacity: 0.5; cursor: default; }
+.topbar button:active { background: rgba(255, 255, 255, 0.16); }
+.topbar .icon-btn { width: 44px; justify-content: center; padding: 0; }
 
-.primary {
-  background: var(--green);
-  border-color: var(--green);
-  color: var(--cream);
-  font-size: 20px;
+/* --- buttons ------------------------------------------------------------ */
+
+button, .btn {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+button:disabled { cursor: default; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: var(--tap);
+  padding: 0 var(--sp-4);
+  font-size: 1rem;
   font-weight: 600;
-  min-height: 68px;
-  width: 100%;
+  text-decoration: none;
+  color: var(--ink);
 }
 
-.primary.huge { min-height: 96px; font-size: 24px; }
+.btn-block { width: 100%; }
 
-.secondary { width: 100%; font-size: 17px; }
+.btn-primary {
+  min-height: 56px;
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+  box-shadow: var(--shadow-1);
+}
 
-.danger { color: var(--bad); border-color: var(--bad); }
+.btn-primary:active { background: var(--brand-ink); }
 
-/* Backing out is not destructive, and should not wear the colour that means "this deletes
-   something". Only Remove-the-key and Delete-order earn that. */
-.quiet {
+/* Quiet rather than dashed: the screen already says what is missing, and two dashed boxes on
+   one screen read as two things waiting to be filled in. */
+.btn-primary:disabled {
+  background: rgba(22, 25, 28, 0.05);
   border-color: transparent;
-  background: transparent;
-  color: var(--muted);
+  color: var(--ink-3);
+  box-shadow: none;
+  min-height: var(--tap);
 }
 
-/* --- cards -------------------------------------------------------------- */
+.btn-secondary { background: var(--surface); box-shadow: var(--shadow-1); }
+
+.btn-quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-2);
+  font-weight: 500;
+}
+
+.btn-danger { color: var(--bad); border-color: rgba(145, 40, 25, 0.35); background: transparent; }
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: var(--r-md);
+}
+
+/* --- cards and rows ----------------------------------------------------- */
 
 .card {
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 14px;
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
 }
 
-.card h2 { margin: 0 0 8px; font-size: 17px; }
+.card-pad { padding: var(--sp-4); }
 
-.list { display: flex; flex-direction: column; gap: 10px; }
+.list { display: flex; flex-direction: column; gap: var(--sp-2); }
 
-.list-row {
+.row-button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  text-align: left;
+}
+
+.row-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.row-line .name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-line .amount { font-weight: 650; font-variant-numeric: tabular-nums; flex: none; }
+
+/* --- hero --------------------------------------------------------------- */
+
+.hero {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  width: 100%;
+  padding: var(--sp-5) var(--sp-4);
+  text-align: left;
+  border: 0;
+  border-radius: var(--r-lg);
+  background: linear-gradient(160deg, #1a6438 0%, var(--brand) 60%);
+  color: #fff;
+  box-shadow: var(--shadow-2);
+}
+
+.hero:active { background: var(--brand-ink); }
+
+.hero-glyph {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 56px;
+  height: 56px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.hero-title { font-size: 1.375rem; font-weight: 700; letter-spacing: 0.01em; }
+.hero-sub { font-size: 0.9375rem; opacity: 0.88; }
+
+/* --- chips -------------------------------------------------------------- */
+
+.chip {
+  display: inline-block;
+  flex: none;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+  font-size: 0.75rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.chip-warn { background: var(--warn-bg); color: var(--warn); }
+.chip-bad { background: var(--bad-bg); color: var(--bad); }
+.chip-muted { background: rgba(22, 25, 28, 0.06); color: var(--ink-2); }
+
+/* --- the three steps, shown only before the first order ----------------- */
+
+.steps { display: flex; flex-direction: column; gap: var(--sp-4); padding: var(--sp-4); }
+
+.step { display: flex; gap: var(--sp-3); align-items: flex-start; }
+
+.step-n {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+/* Puts the one thing a screen is for in the optical centre rather than against the header. */
+.fill-center {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  text-align: left;
+  justify-content: center;
+  gap: var(--sp-4);
+  padding-bottom: var(--sp-6);
+}
+
+/* --- capture ------------------------------------------------------------ */
+
+.capture {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
   width: 100%;
-  padding: 12px 14px;
+  padding: var(--sp-6) var(--sp-4);
+  border: 2px dashed var(--brand-line);
+  border-radius: var(--r-lg);
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 1.0625rem;
+  font-weight: 650;
 }
 
-.list-row .title { font-weight: 600; }
-.list-row .sub { color: var(--muted); font-size: 15px; }
-
-.price { font-variant-numeric: tabular-nums; }
-
-.tag {
-  display: inline-block;
-  font-size: 13px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--green-light);
-  color: var(--green-dark);
-}
-
-.tag.warn { background: var(--warn-bg); color: var(--warn); }
-.tag.bad { background: var(--bad-bg); color: var(--bad); }
-
-/* --- photos ------------------------------------------------------------- */
+.capture:active { background: #ddeae1; }
+.capture .t-cap { color: var(--brand-ink); opacity: 0.75; font-weight: 500; }
 
 .photos {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: var(--sp-2);
 }
 
 .photo {
   position: relative;
   aspect-ratio: 3 / 4;
-  border-radius: 10px;
   overflow: hidden;
   border: 1px solid var(--line);
-  background: #fff;
+  border-radius: var(--r-sm);
+  background: var(--surface);
 }
 
-.photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
 
 .photo button {
   position: absolute;
   top: 4px;
   right: 4px;
-  min-height: 32px;
-  width: 32px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
   padding: 0;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.6);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: rgba(10, 14, 12, 0.62);
   color: #fff;
-  border: none;
-  font-size: 18px;
+  font-size: 1.125rem;
   line-height: 1;
+}
+
+/* An action bar that stays reachable with one thumb. */
+.actionbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: auto;
+  padding-top: var(--sp-3);
+  padding-bottom: calc(var(--sp-2) + env(safe-area-inset-bottom));
+  background: linear-gradient(to bottom, rgba(247, 246, 242, 0), var(--paper) 30%);
 }
 
 /* --- chat --------------------------------------------------------------- */
 
-.chat { display: flex; flex-direction: column; gap: 10px; }
+.chat { display: flex; flex-direction: column; gap: var(--sp-2); }
 
 .bubble {
-  max-width: 88%;
-  padding: 11px 14px;
-  border-radius: 16px;
+  max-width: 85%;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-lg);
   white-space: pre-wrap;
   word-break: break-word;
+  font-size: 0.9375rem;
+  line-height: 1.45;
 }
 
-.bubble.app { background: #fff; border: 1px solid var(--line); align-self: flex-start; }
-.bubble.user { background: var(--green); color: var(--cream); align-self: flex-end; }
+/* Named "reply"/"mine" rather than "app"/"user": a bubble whose class was `bubble app` also
+   matched the root container's own `.app` rule, which gave every reply the container's auto
+   margins and centred it. */
+.bubble.reply {
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  border-bottom-left-radius: var(--sp-1);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.bubble.mine {
+  align-self: flex-end;
+  border-bottom-right-radius: var(--sp-1);
+  background: var(--brand);
+  color: #fff;
+}
 
 .composer {
   position: sticky;
   bottom: 0;
   display: flex;
-  gap: 8px;
-  padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
-  background: linear-gradient(to bottom, rgba(250, 249, 246, 0), var(--cream) 22%);
+  gap: var(--sp-2);
+  margin-top: auto;
+  padding: var(--sp-3) 0 calc(var(--sp-3) + env(safe-area-inset-bottom));
+  background: linear-gradient(to bottom, rgba(247, 246, 242, 0), var(--paper) 26%);
 }
 
 .composer input[type='text'] {
   flex: 1;
+  min-width: 0;
   min-height: var(--tap);
-  border-radius: var(--radius);
+  padding: 0 var(--sp-4);
   border: 1px solid var(--line);
-  padding: 0 14px;
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
   font: inherit;
-  background: #fff;
+  font-size: 1rem;
 }
 
-.icon-button { width: var(--tap); padding: 0; font-size: 22px; }
+.composer .icon-btn { flex: none; background: var(--surface); box-shadow: var(--shadow-1); }
+.composer .icon-btn.send { background: var(--brand); border-color: var(--brand); color: #fff; }
 
 /* --- forms -------------------------------------------------------------- */
 
-label { display: block; font-size: 15px; color: var(--muted); margin-bottom: 6px; }
+label {
+  display: block;
+  margin-bottom: var(--sp-1);
+  font-size: 0.8125rem;
+  font-weight: 650;
+  color: var(--ink-2);
+}
 
 input[type='text'], input[type='password'], input[type='number'], select {
   width: 100%;
   min-height: var(--tap);
-  border-radius: var(--radius);
+  padding: 0 var(--sp-3);
   border: 1px solid var(--line);
-  padding: 0 14px;
-  font: inherit;
-  background: #fff;
+  border-radius: var(--r-md);
+  background: var(--surface);
   color: var(--ink);
+  font: inherit;
+  font-size: 1rem;
 }
 
-a { color: var(--green); }
+input::placeholder { color: var(--ink-3); }
+
+/* A field whose action belongs inside it, rather than as another full-width button. */
+.field { position: relative; }
+.field input { padding-right: 84px; }
+
+.field-action {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  min-height: 36px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+a { color: var(--brand); }
+
+/* A link that reads as a row, not as a button pretending to be one. */
+.link-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 56px;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  color: var(--brand-ink);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+/* Explanations that are there when wanted and silent when not. */
+details.note { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+
+details.note > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--tap);
+  padding: 0 var(--sp-4);
+  list-style: none;
+  cursor: pointer;
+  font-size: 0.9375rem;
+  font-weight: 650;
+  color: var(--ink-2);
+}
+
+details.note > summary::-webkit-details-marker { display: none; }
+details.note > summary::after { content: '+'; font-size: 1.25rem; color: var(--ink-3); }
+details.note[open] > summary::after { content: '–'; }
+details.note p { margin: 0; padding: 0 var(--sp-4) var(--sp-4); font-size: 0.9375rem; color: var(--ink-2); }
+
+/* --- notices ------------------------------------------------------------ */
 
 .notice {
-  border-radius: var(--radius);
-  padding: 12px 14px;
-  font-size: 16px;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  font-size: 0.9375rem;
+  text-align: left;
+  border: 1px solid transparent;
 }
 
-.notice.warn { background: var(--warn-bg); color: var(--warn); }
-.notice.bad { background: var(--bad-bg); color: var(--bad); }
-.notice.info { background: var(--green-light); color: var(--green-dark); }
+.notice.warn { background: var(--warn-bg); border-color: #efdfb3; color: var(--warn); }
+.notice.bad { background: var(--bad-bg); border-color: #f0cfc8; color: var(--bad); }
+.notice.info { background: var(--brand-soft); border-color: var(--brand-line); color: var(--brand-ink); }
+
+button.notice { display: block; width: 100%; font: inherit; font-size: 0.9375rem; cursor: pointer; }
 
 .hidden-input { display: none; }
+
+/* --- feedback ----------------------------------------------------------- */
 
 .spinner {
   display: inline-block;
   width: 18px;
   height: 18px;
-  border: 3px solid var(--green-light);
-  border-top-color: var(--green);
+  margin-right: var(--sp-2);
+  border: 3px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
   border-radius: 50%;
-  animation: spin 0.8s linear infinite;
   vertical-align: -3px;
-  margin-right: 8px;
+  animation: spin 0.8s linear infinite;
 }
+
+.spinner.on-paper { border-color: var(--brand-line); border-top-color: var(--brand); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-@media (prefers-reduced-motion: reduce) {
-  .spinner { animation-duration: 2.4s; }
-}
-
-/* --- confirmation ------------------------------------------------------- */
-
 .toast {
   position: fixed;
+  top: calc(60px + env(safe-area-inset-top));
   left: 50%;
-  transform: translateX(-50%);
-  /* Below the header, not over the button that was just pressed - covering the control you
-     touched is how a confirmation ends up reading as an error. */
-  top: calc(64px + env(safe-area-inset-top));
   z-index: 50;
   display: flex;
   align-items: center;
-  gap: 10px;
-  max-width: calc(100% - 32px);
-  padding: 13px 20px;
-  border-radius: 999px;
-  background: var(--green);
-  color: var(--cream);
+  gap: var(--sp-2);
+  max-width: calc(100% - var(--sp-6));
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-pill);
+  background: var(--ink);
+  color: #fff;
+  font-size: 0.9375rem;
   font-weight: 600;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--shadow-2);
+  transform: translateX(-50%);
   animation: toast-in 180ms ease-out;
 }
 
@@ -315,12 +612,12 @@ a { color: var(--green); }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  background: var(--cream);
-  color: var(--green);
   flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-pill);
+  background: #fff;
+  color: var(--brand);
 }
 
 @keyframes toast-in {
@@ -328,49 +625,35 @@ a { color: var(--green); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
 
-/* A button that has just done something, so the page is not the only thing that says so. */
-.button-done {
+.update-banner {
+  position: fixed;
+  bottom: calc(var(--sp-4) + env(safe-area-inset-bottom));
+  left: 50%;
+  z-index: 40;
+  width: auto;
+  max-width: calc(100% - var(--sp-5));
+  min-height: var(--tap);
+  padding: 0 var(--sp-4);
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
+  border: 1px solid var(--brand-line);
+  border-radius: var(--r-pill);
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+  font-size: 0.875rem;
+  font-weight: 650;
+  box-shadow: var(--shadow-2);
+  transform: translateX(-50%);
 }
 
-/* An action that cannot run yet states what is missing instead of sitting there greyed out. */
-.primary:disabled {
-  background: transparent;
-  color: var(--muted);
-  border: 2px dashed var(--line);
-  opacity: 1;
-  font-size: 17px;
+/* --- wider screens ------------------------------------------------------ */
+
+@media (min-width: 900px) {
+  html { font-size: 106.25%; }
+  main { padding: var(--sp-5); gap: var(--sp-5); }
 }
-
-/* Icon buttons sit on the text baseline rather than floating above it. */
-button svg { vertical-align: -4px; }
-
-.secondary svg { margin-right: 8px; }
 
 @media (prefers-reduced-motion: reduce) {
   .toast { animation: none; }
-}
-
-/* --- update notice ------------------------------------------------------ */
-
-.update-banner {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: calc(16px + env(safe-area-inset-bottom));
-  z-index: 40;
-  width: auto;
-  min-height: 46px;
-  padding: 0 18px;
-  border-radius: 999px;
-  border: 1px solid var(--green);
-  background: var(--green-light);
-  color: var(--green-dark);
-  font-size: 15px;
-  font-weight: 600;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
-  max-width: calc(100% - 28px);
+  .spinner { animation-duration: 2.4s; }
 }

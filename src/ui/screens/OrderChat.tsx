@@ -9,7 +9,7 @@ import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
 import { updates } from '../updates';
 import { useUpdateHold } from '../useUpdateHold';
-import { CameraIcon, SendIcon } from '../components/icons';
+import { CameraIcon, ListIcon, SendIcon, TruckIcon } from '../components/icons';
 import { providerFor } from '../services';
 
 export function OrderChat(props: {
@@ -83,29 +83,38 @@ export function OrderChat(props: {
         title={order?.supplier ?? 'Order'}
         go={go}
         back={{ kind: 'home' }}
-        action={{ label: 'The order', onClick: () => go({ kind: 'items', orderId }) }}
+        action={{
+          label: 'The order',
+          icon: <ListIcon size={22} />,
+          onClick: () => go({ kind: 'items', orderId }),
+        }}
       />
       <main>
         <div className="chat">
           {messages.map((message) => (
             <div
               key={message.id}
-              className={`bubble ${message.role === MessageRole.USER ? 'user' : 'app'}`}
+              className={`bubble ${message.role === MessageRole.USER ? 'mine' : 'reply'}`}
             >
               {message.text}
             </div>
           ))}
           {busy && (
-            <div className="bubble app muted">
-              <span className="spinner" aria-hidden="true" />
+            <div className="bubble reply t-sub">
+              <span className="spinner on-paper" aria-hidden="true" />
               Thinking…
             </div>
           )}
           <div ref={bottom} />
         </div>
 
-        <button type="button" className="secondary" onClick={() => go({ kind: 'delivery', orderId })}>
-          Check a delivery against this order
+        <button
+          type="button"
+          className="btn btn-secondary btn-block"
+          onClick={() => go({ kind: 'delivery', orderId })}
+        >
+          <TruckIcon size={20} />
+          Check a delivery
         </button>
 
         <div className="composer">
@@ -123,12 +132,12 @@ export function OrderChat(props: {
           <PhotoPickerButton disabled={busy} onPick={(file) => void send(text, file)} />
           <button
             type="button"
-            className="icon-button"
+            className="icon-btn send"
             disabled={busy}
             aria-label="Send"
             onClick={() => void send(text)}
           >
-            <SendIcon />
+            <SendIcon size={20} />
           </button>
         </div>
       </main>
@@ -143,18 +152,19 @@ function PhotoPickerButton(props: { disabled: boolean; onPick: (file: File) => v
     return (
       <button
         type="button"
-        className="icon-button"
+        className="icon-btn"
         disabled={props.disabled}
         aria-label="Attach a photo"
         onClick={() => setOpen(true)}
       >
-        <CameraIcon />
+        <CameraIcon size={20} />
       </button>
     );
   }
   return (
     <PhotoPicker
-      cameraLabel="Photo"
+      compact
+      captureLabel="Photo"
       galleryLabel="Pick"
       disabled={props.disabled}
       onPick={(files) => {

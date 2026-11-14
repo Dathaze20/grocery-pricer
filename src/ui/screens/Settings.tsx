@@ -3,12 +3,16 @@ import { GEMINI_API_KEY_URL, SUGGESTED_GEMINI_MODELS, configuredModel } from '..
 import type { Repository } from '../../data/repository';
 import type { Screen } from '../App';
 import { TopBar } from '../components/TopBar';
-import { useUpdateHold } from '../useUpdateHold';
 import { Toast } from '../components/Toast';
-import { CheckIcon } from '../components/icons';
+import { CheckIcon, ExternalLinkIcon } from '../components/icons';
+import { useUpdateHold } from '../useUpdateHold';
 
 /**
  * Where the shopkeeper puts their own Gemini key.
+ *
+ * The field comes first and the explanations fold away behind a summary. Three paragraphs
+ * before the first input is a wall to climb every time you come here to change one thing - and
+ * the people who need the explanation need it once.
  *
  * The key is typed here and stored here, on this device. It is not in the source, not in the
  * build, not in the repository, and not on any server of ours - there is no server of ours. The
@@ -53,63 +57,103 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
     setTimeout(() => setToast(null), 100);
   }, [repo, key, model]);
 
+  const touch = useCallback(() => {
+    edited.current = true;
+    setDirty(true);
+  }, []);
+
   return (
     <div className="app">
       <TopBar title="Settings" go={go} back={{ kind: 'home' }} />
       <main>
-        <section className="card stack">
-          <h2>AI setup</h2>
-          <p className="muted">
-            Grocery Pricer reads your receipts with Google Gemini. You use your own key, on Google's
-            free tier. Nothing is charged to you, and the key never leaves this device except to
-            talk to Google.
-          </p>
-          <a className="button secondary center" href={GEMINI_API_KEY_URL} target="_blank" rel="noreferrer">
-            Get a free Gemini API key →
-          </a>
-          <p className="muted">
-            Open that page, sign in with your Google account, press Create API key, then copy it
-            here. It is the same Google AI Studio you already use.
-          </p>
+        <h2 className="t-section" style={{ marginTop: 0 }}>AI setup</h2>
 
-          <label htmlFor="key">Your Gemini API key</label>
-          <input
-            id="key"
-            type={reveal ? 'text' : 'password'}
-            value={key}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="AIza…"
-            onChange={(event) => {
+        <div className="card card-pad stack">
+          <div>
+            <label htmlFor="key">Your Gemini API key</label>
+            <div className="field">
+              <input
+                id="key"
+                type={reveal ? 'text' : 'password'}
+                value={key}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="AIza…"
+                onChange={(event) => {
+                  touch();
+                  setKey(event.target.value);
+                }}
+              />
+              <button type="button" className="field-action" onClick={() => setReveal(!reveal)}>
+                {reveal ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="model">Model</label>
+            <input
+              id="model"
+              type="text"
+              value={model}
+              spellCheck={false}
+              placeholder="Default"
+              onChange={(event) => {
+                touch();
+                setModel(event.target.value);
+              }}
+            />
+            <p className="t-cap" style={{ marginTop: 'var(--sp-2)' }}>
+              Reading your receipts with <strong>{configuredModel(model)}</strong>. Leave empty for
+              the default; if Google ever retires it, try{' '}
+              {SUGGESTED_GEMINI_MODELS.find((name) => name !== configuredModel(model))}.
+            </p>
+          </div>
+        </div>
+
+        <a className="link-row" href={GEMINI_API_KEY_URL} target="_blank" rel="noreferrer">
+          <span className="grow">Get a free Gemini API key</span>
+          <ExternalLinkIcon size={18} />
+        </a>
+
+        <details className="note">
+          <summary>How do I get a key?</summary>
+          <p>
+            Open the link above, sign in with your Google account, press Create API key, then copy
+            it here. It is the same Google AI Studio you already use. The key goes on Google's free
+            tier — nothing is charged to you, and Grocery Pricer never enables billing or picks a
+            paid model.
+          </p>
+        </details>
+
+        <details className="note">
+          <summary>Where does my data live?</summary>
+          <p>
+            Orders, photos, prices and this key are stored in this browser, on this device. The key
+            never leaves it except to talk to Google. Clearing the browser's site data deletes
+            everything; installing the app to the home screen keeps it.
+          </p>
+        </details>
+
+        {key.length > 0 && (
+          <button
+            type="button"
+            className="btn btn-danger btn-block"
+            onClick={() => {
               edited.current = true;
-              setDirty(true);
-              setKey(event.target.value);
+              setDirty(false);
+              setKey('');
+              void repo.setApiKey(null);
+              setToast('Key removed');
+              setTimeout(() => setToast(null), 100);
             }}
-          />
-          <button type="button" className="secondary" onClick={() => setReveal(!reveal)}>
-            {reveal ? 'Hide the key' : 'Show the key'}
+          >
+            Remove the key from this device
           </button>
+        )}
 
-          <label htmlFor="model">Model</label>
-          <input
-            id="model"
-            type="text"
-            value={model}
-            spellCheck={false}
-            placeholder="Default"
-            onChange={(event) => {
-              edited.current = true;
-              setDirty(true);
-              setModel(event.target.value);
-            }}
-          />
-          <p className="muted">
-            Reading your receipts with <strong>{configuredModel(model)}</strong>. Leave empty for
-            the default; if Google ever retires it, try{' '}
-            {SUGGESTED_GEMINI_MODELS.find((name) => name !== configuredModel(model))}.
-          </p>
-
-          <button type="button" className="primary button-done" onClick={() => void save()}>
+        <div className="actionbar">
+          <button type="button" className="btn btn-primary btn-block" onClick={() => void save()}>
             {saved ? (
               <>
                 <CheckIcon size={20} /> Saved
@@ -118,32 +162,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
               'Save'
             )}
           </button>
-
-          {key.length > 0 && (
-            <button
-              type="button"
-              className="secondary danger"
-              onClick={() => {
-                edited.current = true;
-                setDirty(false);
-                setKey('');
-                void repo.setApiKey(null);
-                setToast('Key removed');
-                setTimeout(() => setToast(null), 100);
-              }}
-            >
-              Remove the key from this device
-            </button>
-          )}
-        </section>
-
-        <section className="card stack">
-          <h2>Where your data lives</h2>
-          <p className="muted">
-            Orders, photos, prices and this key are stored in this browser, on this device. Clearing
-            the browser's site data deletes them. Installing the app to the home screen keeps them.
-          </p>
-        </section>
+        </div>
       </main>
       <Toast message={toast} />
     </div>

@@ -49,46 +49,56 @@ export function OrderItems(props: {
         {items.length === 0 && <p className="muted">Nothing in this order yet.</p>}
         <div className="list">
           {items.map((item) => (
-            <div className="card" key={item.id}>
+            <div className="card card-pad" key={item.id}>
               <button
                 type="button"
-                className="list-row"
+                className="row-button"
                 style={{ border: 0, background: 'transparent', padding: 0 }}
                 onClick={() => {
                   setOpenId(openId === item.id ? null : item.id);
                   setDraft(priceText(item));
                 }}
               >
-                <span className="title">
-                  {item.displayName}
-                  {item.size !== null ? ` ${item.size}` : ''}
-                </span>
-                <span className="sub price">
-                  {costText(item)} → {priceLabel(item)}
+                <span className="grow stack" style={{ gap: 2 }}>
+                  <span className="row-line">
+                    <span className="name">{item.displayName}</span>
+                    <span className="amount price">{priceLabel(item)}</span>
+                  </span>
+                  <span className="row-line">
+                    <span className="t-cap">
+                      {item.size ?? ''}
+                      {item.size !== null ? ' · ' : ''}cost {costText(item)}
+                    </span>
+                    {item.confidence !== ItemConfidence.HIGH && (
+                      <span
+                        className={`chip ${
+                          item.confidence === ItemConfidence.PROBLEM ? 'chip-bad' : 'chip-warn'
+                        }`}
+                      >
+                        {item.confidence === ItemConfidence.PROBLEM ? 'Needs a price' : 'Check'}
+                      </span>
+                    )}
+                  </span>
                 </span>
               </button>
 
-              {item.confidence !== ItemConfidence.HIGH && (
-                <span className={`tag ${item.confidence === ItemConfidence.PROBLEM ? 'bad' : 'warn'}`}>
-                  {item.confidence === ItemConfidence.PROBLEM ? 'Needs a price' : 'Worth checking'}
-                </span>
-              )}
-
               {openId === item.id && (
-                <div className="stack" style={{ marginTop: 12 }}>
-                  <p className="muted">{item.pricingRationale ?? ''}</p>
+                <div className="stack" style={{ marginTop: 'var(--sp-3)' }}>
+                  <p className="t-cap">{item.pricingRationale ?? ''}</p>
                   {item.sourceText.length > 0 && (
-                    <p className="muted">Read from: “{item.sourceText[0]}”</p>
+                    <p className="t-cap">Read from: “{item.sourceText[0]}”</p>
                   )}
-                  <label htmlFor={`price-${item.id}`}>What you charge</label>
-                  <input
-                    id={`price-${item.id}`}
-                    type="text"
-                    inputMode="decimal"
-                    value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                  />
-                  <button type="button" className="secondary" onClick={() => void save(item)}>
+                  <div>
+                    <label htmlFor={`price-${item.id}`}>What you charge</label>
+                    <input
+                      id={`price-${item.id}`}
+                      type="text"
+                      inputMode="decimal"
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
+                    />
+                  </div>
+                  <button type="button" className="btn btn-secondary btn-block" onClick={() => void save(item)}>
                     Save this price
                   </button>
                 </div>
@@ -107,8 +117,8 @@ function costText(item: StoredItem): string {
 
 function priceLabel(item: StoredItem): string {
   if (item.approvedPrice !== null) return Money.fromStorage(item.approvedPrice).format();
-  if (item.suggestedPrice !== null) return `${Money.fromStorage(item.suggestedPrice).format()} suggested`;
-  return 'no price yet';
+  if (item.suggestedPrice !== null) return Money.fromStorage(item.suggestedPrice).format();
+  return '—';
 }
 
 function priceText(item: StoredItem): string {

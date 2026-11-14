@@ -124,7 +124,7 @@ async function main() {
     // Typed the instant the screen appears, on purpose. Settings loads the stored key from
     // IndexedDB asynchronously, and on a slow device that read lands after the user has pasted
     // their key: it must not overwrite what they typed, and Save must not then store the blank.
-    await page.click('text=Settings');
+    await page.click('button[aria-label="Settings"]');
     await page.fill('#key', 'AIza-test-key');
     await page.click('button:has-text("Save")');
     await page.waitForTimeout(200);
@@ -142,7 +142,7 @@ async function main() {
     );
 
     await page.click('button:has-text("Back")');
-    await page.click('text=Settings');
+    await page.click('button[aria-label="Settings"]');
     check(
       'the key is still there when settings is reopened',
       await holdsValue(page, '#key', 'AIza-test-key'),
@@ -155,7 +155,7 @@ async function main() {
     await page.click('button:has-text("Save")');
     await page.waitForTimeout(200);
     await page.click('button:has-text("Back")');
-    await page.click('text=Settings');
+    await page.click('button[aria-label="Settings"]');
     check(
       'saving an empty box does not throw the key away',
       await holdsValue(page, '#key', 'AIza-test-key'),
@@ -195,8 +195,8 @@ async function main() {
     check('a photographed receipt appears', (await page.locator('.photo').count()) === 1);
 
     await page.click('button[aria-label="Process order"]');
-    await waitOrExplain(page, '.bubble.app', { served, errors });
-    const opening = await page.locator('.bubble.app').first().innerText();
+    await waitOrExplain(page, '.bubble.reply', { served, errors });
+    const opening = await page.locator('.bubble.reply').first().innerText();
     check('the order is summarised', opening.includes('1 product'), opening);
     check('the total is the app\'s own arithmetic', opening.includes('$24.00'), opening);
     check('gemini was actually called', calls.length > 0);
@@ -208,7 +208,7 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll('.bubble').length >= 3, null, {
       timeout: 20000,
     });
-    const answer = await page.locator('.bubble.app').last().innerText();
+    const answer = await page.locator('.bubble.reply').last().innerText();
     // $24.00 for 12 is $2.00 each, which is the $2.00-$2.99 rung: $4.99.
     check('the answer is priced from the local engine', answer.includes('$4.99'), answer);
     check('the answer names the product', answer.toLowerCase().includes('mayonnaise'), answer);
