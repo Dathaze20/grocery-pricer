@@ -109,12 +109,16 @@ export interface AvailableModel {
 }
 
 /**
- * Asks Google which models this key can actually use.
+ * Asks Google which models it advertises to this key.
  *
- * This is the question a 404 raises and nothing else can answer: model names change, and a key
- * issued today may not be offered a model that worked last month. Asking is one cheap call, it
- * runs on the owner's own device with the key already stored there, and it turns "Gemini
- * returned an error" into a list to choose from.
+ * Worth saying precisely, because it is easy to over-read: this is the list Google publishes
+ * for the key, not a guarantee. A model can appear here and still refuse a generateContent
+ * call - that combination is exactly what a 404 on a listed model looks like. So the list
+ * narrows the search and gives the owner something to try; it does not prove anything.
+ *
+ * Still worth asking. Model names change, a key issued today may not be offered a model that
+ * worked last month, and one cheap call on the owner's own device - with the key already
+ * stored there - beats guessing.
  */
 export async function listModels(config: GeminiConfig): Promise<AiResult<readonly AvailableModel[]>> {
   const key = config.apiKey?.trim();
@@ -144,7 +148,7 @@ export async function listModels(config: GeminiConfig): Promise<AiResult<readonl
   return aiOk(parseModels(body));
 }
 
-/** Keeps only the models that can do the job this app needs: generateContent. */
+/** Keeps only the models Google lists as supporting generateContent. Listed, not proven. */
 export function parseModels(body: string): readonly AvailableModel[] {
   let parsed: unknown;
   try {

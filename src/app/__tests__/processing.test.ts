@@ -413,55 +413,122 @@ describe('processOrder', () => {
   });
 });
 
-describe('retrying an order that failed part way', () => {
-  it('replaces the previous attempt rather than listing everything twice', async () => {
+describe('retrying an order', () => {
+  it('will not read a finished order again by accident', async () => {
     const repo = await freshRepo();
     const { orderId } = await orderWithPhoto(repo);
 
     const provider = new FakeAiProvider();
     provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
-    const first = await processOrder(repo, provider, orderId);
-    expect(first.ok).toBe(true);
-    const afterFirst = await repo.itemsFor(orderId);
-    expect(afterFirst).toHaveLength(1);
+    expect((await processOrder(repo, provider, orderId)).ok).toBe(true);
+    const after = await repo.itemsFor(orderId);
+    expect(after).toHaveLength(1);
 
-    // The shopkeeper presses PROCESS ORDER again on the same order - the photographs are still
-    // there, so this is the ordinary retry, not a new order.
-    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
-    const second = await processOrder(repo, provider, orderId);
-    expect(second.ok).toBe(true);
-
-    const afterSecond = await repo.itemsFor(orderId);
-    expect(afterSecond).toHaveLength(1);
-    expect(afterSecond[0]!.id).not.toBe(afterFirst[0]!.id);
+    // A stray press on an order that is already done. Nothing is sent and nothing is touched.
+    const again = await processOrder(repo, provider, orderId);
+    expect(again.ok).toBe(false);
+    expect(again.summary).toContain('already been read');
+    expect(await repo.itemsFor(orderId)).toHaveLength(1);
+    expect((await repo.order(orderId))!.status).toBe(OrderStatus.READY);
   });
 
-  it('keeps every photograph when the model refuses, so the retry has something to read', async () => {
+  it('replaces rather than appends when a re-read is actually asked for', async () => {
     const repo = await freshRepo();
     const { orderId } = await orderWithPhoto(repo);
 
     const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    await processOrder(repo, provider, orderId);
+    const first = await repo.itemsFor(orderId);
+
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    const second = await processOrder(repo, provider, orderId, { reprocess: true });
+    expect(second.ok).toBe(true);
+
+    const rows = await repo.itemsFor(orderId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.id).not.toBe(first[0]!.id);
+  });
+
+  it('A FAILED RETRY CANNOT ERASE AN APPROVED PRICE', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    await processOrder(repo, provider, orderId);
+
+    // The owner decides what to charge. That decision is theirs, not the model's.
+    const item = (await repo.itemsFor(orderId))[0]!;
+    await repo.approvePrice(item.id, Money.of('6.25'));
+    expect((await repo.itemsFor(orderId))[0]!.approvedPrice).toBe(Money.of('6.25').toStorage());
+
+    // Now a re-read that Gemini refuses outright.
     provider.queueFailure({
       kind: 'modelUnavailable',
       model: 'gemini-2.5-flash',
       status: 404,
       detail: 'not found for API version v1beta',
     });
+    const failed = await processOrder(repo, provider, orderId, { reprocess: true });
+    expect(failed.ok).toBe(false);
+
+    // Everything the owner had is still there.
+    const after = await repo.itemsFor(orderId);
+    expect(after).toHaveLength(1);
+    expect(after[0]!.id).toBe(item.id);
+    expect(after[0]!.approvedPrice).toBe(Money.of('6.25').toStorage());
+    expect(after[0]!.displayName).toBe(item.displayName);
+
+    // And the order is not left looking broken when its products are intact.
+    const order = await repo.order(orderId);
+    expect(order!.status).toBe(OrderStatus.READY);
+    expect(order!.failureMessage).toContain('HTTP 404');
+  });
+
+  it('carries an approved price across a re-read that succeeds', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    await processOrder(repo, provider, orderId);
+    const item = (await repo.itemsFor(orderId))[0]!;
+    await repo.approvePrice(item.id, Money.of('6.25'));
+
+    // Same product, a new wholesale cost. The owner's price is still the owner's price.
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [extractedItem({ casePrice: '36.00' })],
+      warnings: [],
+    });
+    expect((await processOrder(repo, provider, orderId, { reprocess: true })).ok).toBe(true);
+
+    const after = await repo.itemsFor(orderId);
+    expect(after).toHaveLength(1);
+    expect(after[0]!.approvedPrice).toBe(Money.of('6.25').toStorage());
+  });
+
+  it('keeps every photograph and the stored key when the model refuses', async () => {
+    const repo = await freshRepo();
+    await repo.setApiKey('AIza-the-owners-own-key');
+    const { orderId } = await orderWithPhoto(repo);
+
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'modelUnavailable', model: 'gemini-2.5-flash', status: 404 });
 
     const failed = await processOrder(repo, provider, orderId);
     expect(failed.ok).toBe(false);
-    expect((await repo.photosFor(orderId, false))).toHaveLength(1);
+    expect(await repo.photosFor(orderId, false)).toHaveLength(1);
+    expect(await repo.apiKey()).toBe('AIza-the-owners-own-key');
 
     const order = await repo.order(orderId);
+    // This one had nothing to lose, so it is the retryable kind.
     expect(order!.status).toBe(OrderStatus.FAILED);
-    // The order itself carries the diagnosis, so it is still readable after a reload.
     expect(order!.failureMessage).toContain('HTTP 404');
-    expect(order!.failureMessage).toContain('gemini-2.5-flash');
 
-    // And the retry then works on exactly the same photographs.
     provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
-    const retried = await processOrder(repo, provider, orderId);
-    expect(retried.ok).toBe(true);
+    expect((await processOrder(repo, provider, orderId)).ok).toBe(true);
     expect(await repo.itemsFor(orderId)).toHaveLength(1);
   });
 });

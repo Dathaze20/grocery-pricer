@@ -45,6 +45,8 @@ describe('every HTTP failure is told apart', () => {
     expect(message).toContain('gemini-2.5-flash');
     // The point of the whole fix: it must not send the owner off to retype a working key.
     expect(message).toContain('the key itself is fine');
+    // Points at the Settings control by the name it actually has on screen.
+    expect(message).toContain('List the models Google advertises');
     // And it is not worth trying the remaining photos with a model that does not exist.
     expect(isFatalForRun(error)).toBe(true);
     expect(isTransient(error)).toBe(false);

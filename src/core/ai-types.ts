@@ -215,7 +215,7 @@ export function aiErrorMessage(error: AiError): string {
     case 'modelUnavailable':
       // The single most useful sentence this app can print: it names the model, says the key
       // itself was accepted, and points at the one setting that fixes it.
-      return `Gemini does not offer "${error.model}" to this API key (HTTP 404). The key reached Google, so the key itself is fine. Open Settings and choose a different model - "Check which models my key can use" lists the ones it will accept.`;
+      return `Gemini does not offer "${error.model}" to this API key (HTTP 404). The key reached Google, so the key itself is fine. Open Settings and choose a different model - "List the models Google advertises for my key" shows what to try.`;
     case 'accessDenied':
       return `Google refused this request (HTTP 403)${withDetail(error.detail)} The key was recognised, so this is the Google project's access to the model rather than the key itself.`;
     case 'badRequest':

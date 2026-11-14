@@ -137,7 +137,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
               disabled={checking}
               onClick={() => void checkModels()}
             >
-              {checking ? 'Asking Google...' : 'Check which models my key can use'}
+              {checking ? 'Asking Google...' : 'List the models Google advertises for my key'}
             </button>
 
             {checkError !== null && <p className="notice warn">{checkError}</p>}
@@ -145,14 +145,16 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
             {available !== null &&
               (available.length === 0 ? (
                 <p className="notice warn">
-                  Your key reached Google, but it was not offered any model that can read
+                  Your key reached Google, but Google advertised no model that can read
                   photographs. That points at the Google project the key belongs to rather than at
                   this app.
                 </p>
               ) : (
                 <div className="stack" style={{ marginTop: 'var(--sp-3)' }}>
                   <p className="t-cap">
-                    Your key can use these. Tap one to select it, then press Save.
+                    Google advertises these models to your key. Being listed is not a promise
+                    that one will work - a model can be listed and still refuse the request - so
+                    if the first choice fails, come back and try another. Tap one, then Save.
                   </p>
                   {available.map((candidate) => (
                     <button

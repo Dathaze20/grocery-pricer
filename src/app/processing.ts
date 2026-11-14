@@ -18,6 +18,14 @@ export interface ProcessOptions {
   /** Injected so tests do not sit through a retry delay. */
   readonly retryDelayMs?: number;
   readonly onProgress?: (step: string) => void;
+  /**
+   * Permission to read an already-processed order again, replacing what is in it.
+   *
+   * Absent by default. Reprocessing throws away the model's previous reading of the receipt,
+   * and the owner has to mean it - a mis-tap on a finished order must not cost them their
+   * work. Approved prices are carried across even when this is given.
+   */
+  readonly reprocess?: boolean;
 }
 
 export interface ProcessResult {
@@ -45,15 +53,31 @@ export async function processOrder(
   const rules = options.rules ?? defaultPricingRules();
   const progress = options.onProgress ?? (() => {});
 
+  const order = await repo.order(orderId);
+  if (order === undefined || order === null) {
+    return { ok: false, itemCount: 0, warnings: [], error: null, summary: 'That order is gone.' };
+  }
+
+  // Reading a receipt again replaces what is in the order. On an order that has already been
+  // processed that is a destructive act, so it does not happen by accident: the caller has to
+  // ask for it. Refused here, before the status is touched, so a stray press changes nothing.
+  const existing = await repo.itemsFor(orderId);
+  if (order.status === OrderStatus.READY && existing.length > 0 && options.reprocess !== true) {
+    return {
+      ok: false,
+      itemCount: existing.length,
+      warnings: [],
+      error: null,
+      summary: 'That order has already been read. Open it to see the products and prices.',
+    };
+  }
+
   const photos = (await repo.photosFor(orderId, false)).sort((a, b) => a.id - b.id);
   if (photos.length === 0) {
-    return fail(repo, orderId, null, 'Add a photo of the receipt first.');
+    return fail(repo, orderId, null, 'Add a photo of the receipt first.', order.status, existing);
   }
 
   await repo.updateOrder(orderId, { status: OrderStatus.PROCESSING, failureMessage: null });
-  // A retry starts from the photographs, not from whatever the last attempt managed to save.
-  // Rows are appended, so without this a second run lists every product twice.
-  await repo.clearItemsFor(orderId);
   progress('Reading the photos');
 
   const parts: IdentifiedImage[] = [];
@@ -67,7 +91,14 @@ export async function processOrder(
   const classified = await classify(provider, parts, photos);
   const paperwork = parts.filter((part) => classified.get(part.photoId) !== OrderImageType.PRODUCT_PHOTO);
   if (paperwork.length === 0) {
-    return fail(repo, orderId, null, 'None of those photos look like a receipt or a case label.');
+    return fail(
+      repo,
+      orderId,
+      null,
+      'None of those photos look like a receipt or a case label.',
+      order.status,
+      existing,
+    );
   }
 
   const batches: AiOrderExtraction[] = [];
@@ -79,7 +110,16 @@ export async function processOrder(
       // A spent quota or a rejected key will not fix itself on the next batch. Stopping here
       // keeps a half-read order from being presented as a whole one.
       if (isFatalForRun(result.error) || batches.length === 0) {
-        return fail(repo, orderId, result.error, aiErrorMessage(result.error));
+        // Nothing has been written yet, and nothing will be: the order keeps every product and
+        // every approved price it had before this attempt.
+        return fail(
+          repo,
+          orderId,
+          result.error,
+          aiErrorMessage(result.error),
+          order.status,
+          existing,
+        );
       }
       batches.push({ supplier: null, items: [], warnings: [aiErrorMessage(result.error)] });
       continue;
@@ -103,7 +143,23 @@ export async function processOrder(
     }
   }
 
-  const saved = await repo.addItems(rows);
+  // A price the owner approved is their decision, not the model's reading, and re-reading the
+  // receipt is no reason to lose it. Matched on the product the row resolved to, which is what
+  // an approved price actually belongs to.
+  const approvedBefore = new Map<number, number>();
+  for (const item of existing) {
+    if (item.productId !== null && item.approvedPrice !== null) {
+      approvedBefore.set(item.productId, item.approvedPrice);
+    }
+  }
+  const carried = rows.map((row) => {
+    if (row.productId === null || row.approvedPrice !== null) return row;
+    const kept = approvedBefore.get(row.productId);
+    return kept === undefined ? row : { ...row, approvedPrice: kept };
+  });
+
+  // The old rows go only now, in the same transaction that writes the new ones.
+  const saved = await repo.replaceItems(orderId, carried);
   for (const item of saved) {
     if (item.productId !== null && item.trueUnitCost !== null) {
       await repo.updateProduct(item.productId, { lastCost: item.trueUnitCost });
@@ -301,15 +357,29 @@ async function withOneRetry<T>(
   return call();
 }
 
+/**
+ * Stops, explains, and leaves the order exactly as it was found.
+ *
+ * An order that already held products does not become a FAILED one because a later re-read did
+ * not work: its status goes back to what it was, so the products and prices stay reachable.
+ * Only an order that had nothing to lose is marked FAILED, which is what the retry button on
+ * the home screen is for. Either way no row is deleted - this function never writes to items.
+ */
 async function fail(
   repo: Repository,
   orderId: number,
   error: AiError | null,
   message: string,
+  previousStatus: OrderStatus = OrderStatus.FAILED,
+  previousItems: readonly StoredItem[] = [],
 ): Promise<ProcessResult> {
-  await repo.updateOrder(orderId, { status: OrderStatus.FAILED, failureMessage: message });
+  const keptData = previousItems.length > 0;
+  await repo.updateOrder(orderId, {
+    status: keptData ? previousStatus : OrderStatus.FAILED,
+    failureMessage: message,
+  });
   await repo.say(orderId, MessageRole.APP, message);
-  return { ok: false, itemCount: 0, warnings: [], error, summary: message };
+  return { ok: false, itemCount: previousItems.length, warnings: [], error, summary: message };
 }
 
 function summarise(items: readonly StoredItem[], total: Money, warnings: readonly string[]): string {
