@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GEMINI_API_KEY_URL, SUGGESTED_GEMINI_MODELS, configuredModel } from '../../ai/model';
+import { listModels, type AvailableModel } from '../../ai/gemini';
+import { aiErrorMessage } from '../../core/ai-types';
 import type { Repository } from '../../data/repository';
 import type { Screen } from '../App';
 import { TopBar } from '../components/TopBar';
@@ -25,6 +27,10 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   const [reveal, setReveal] = useState(false);
   const [saved, setSaved] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  // The answer to "why did Gemini refuse this model?", asked of Google rather than guessed.
+  const [checking, setChecking] = useState(false);
+  const [available, setAvailable] = useState<readonly AvailableModel[] | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
   // True once the user has touched a field. Reading the stored values takes a moment on a cold
   // database, and someone who pastes their key in that moment must not have it wiped from under
   // them - which looks exactly like the app losing the key they just pasted.
@@ -40,6 +46,21 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
     void repo.model().then((stored) => {
       if (!edited.current) setModel(stored ?? '');
     });
+  }, [repo]);
+
+  const checkModels = useCallback(async () => {
+    setChecking(true);
+    setCheckError(null);
+    setAvailable(null);
+    try {
+      // The stored key, not the box: this asks Google the same question the failing call asks.
+      const stored = await repo.apiKey();
+      const result = await listModels({ apiKey: stored });
+      if (result.ok) setAvailable(result.value);
+      else setCheckError(aiErrorMessage(result.error));
+    } finally {
+      setChecking(false);
+    }
   }, [repo]);
 
   const save = useCallback(async () => {
@@ -108,6 +129,52 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
               the default; if Google ever retires it, try{' '}
               {SUGGESTED_GEMINI_MODELS.find((name) => name !== configuredModel(model))}.
             </p>
+
+            <button
+              type="button"
+              className="btn btn-secondary btn-block"
+              style={{ marginTop: 'var(--sp-3)' }}
+              disabled={checking}
+              onClick={() => void checkModels()}
+            >
+              {checking ? 'Asking Google...' : 'Check which models my key can use'}
+            </button>
+
+            {checkError !== null && <p className="notice warn">{checkError}</p>}
+
+            {available !== null &&
+              (available.length === 0 ? (
+                <p className="notice warn">
+                  Your key reached Google, but it was not offered any model that can read
+                  photographs. That points at the Google project the key belongs to rather than at
+                  this app.
+                </p>
+              ) : (
+                <div className="stack" style={{ marginTop: 'var(--sp-3)' }}>
+                  <p className="t-cap">
+                    Your key can use these. Tap one to select it, then press Save.
+                  </p>
+                  {available.map((candidate) => (
+                    <button
+                      key={candidate.id}
+                      type="button"
+                      className="row-button bare"
+                      onClick={() => {
+                        touch();
+                        setModel(candidate.id);
+                        setToast(`Model set to ${candidate.id} - press Save to keep it`);
+                      }}
+                    >
+                      <span className="grow stack" style={{ gap: 2 }}>
+                        <span className="name">{candidate.id}</span>
+                        {candidate.label !== candidate.id && (
+                          <span className="t-cap">{candidate.label}</span>
+                        )}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ))}
           </div>
         </div>
 

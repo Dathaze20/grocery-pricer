@@ -412,3 +412,56 @@ describe('processOrder', () => {
     expect(items[0]!.rawName).toBe('HELLM MAYONNAISE 8Z');
   });
 });
+
+describe('retrying an order that failed part way', () => {
+  it('replaces the previous attempt rather than listing everything twice', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    const first = await processOrder(repo, provider, orderId);
+    expect(first.ok).toBe(true);
+    const afterFirst = await repo.itemsFor(orderId);
+    expect(afterFirst).toHaveLength(1);
+
+    // The shopkeeper presses PROCESS ORDER again on the same order - the photographs are still
+    // there, so this is the ordinary retry, not a new order.
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    const second = await processOrder(repo, provider, orderId);
+    expect(second.ok).toBe(true);
+
+    const afterSecond = await repo.itemsFor(orderId);
+    expect(afterSecond).toHaveLength(1);
+    expect(afterSecond[0]!.id).not.toBe(afterFirst[0]!.id);
+  });
+
+  it('keeps every photograph when the model refuses, so the retry has something to read', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+
+    const provider = new FakeAiProvider();
+    provider.queueFailure({
+      kind: 'modelUnavailable',
+      model: 'gemini-2.5-flash',
+      status: 404,
+      detail: 'not found for API version v1beta',
+    });
+
+    const failed = await processOrder(repo, provider, orderId);
+    expect(failed.ok).toBe(false);
+    expect((await repo.photosFor(orderId, false))).toHaveLength(1);
+
+    const order = await repo.order(orderId);
+    expect(order!.status).toBe(OrderStatus.FAILED);
+    // The order itself carries the diagnosis, so it is still readable after a reload.
+    expect(order!.failureMessage).toContain('HTTP 404');
+    expect(order!.failureMessage).toContain('gemini-2.5-flash');
+
+    // And the retry then works on exactly the same photographs.
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    const retried = await processOrder(repo, provider, orderId);
+    expect(retried.ok).toBe(true);
+    expect(await repo.itemsFor(orderId)).toHaveLength(1);
+  });
+});

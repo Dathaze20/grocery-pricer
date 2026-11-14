@@ -131,6 +131,12 @@ export type AiError =
   | { kind: 'requestTooLarge' }
   | { kind: 'blocked'; reason?: string | null }
   | { kind: 'truncated' }
+  /** HTTP 404: the key reached Google, but this model is not one it may call. */
+  | { kind: 'modelUnavailable'; model: string; status: number; detail?: string | null }
+  /** HTTP 400 that is not about the key: the request itself was refused. */
+  | { kind: 'badRequest'; status: number; detail?: string | null }
+  /** HTTP 403 that is not about the key: the project or model is restricted. */
+  | { kind: 'accessDenied'; status: number; detail?: string | null }
   | { kind: 'serverError'; status: number; detail?: string | null }
   | { kind: 'malformedResponse'; detail: string }
   | { kind: 'unknown'; detail?: string | null };
@@ -155,11 +161,34 @@ export function isFatalForRun(error: AiError): boolean {
   return (
     error.kind === 'missingKey' ||
     error.kind === 'invalidKey' ||
-    error.kind === 'quotaExhausted'
+    error.kind === 'quotaExhausted' ||
+    // A model the key cannot call, or a project that is refused, is refused for every photo.
+    // Trying the remaining batches only spends time and makes the same report arrive late.
+    error.kind === 'modelUnavailable' ||
+    error.kind === 'accessDenied'
   );
 }
 
 /** What the user reads. Never leaks a key, a URL or a stack trace. */
+/**
+ * Appends Google's own explanation when there is one.
+ *
+ * Kept short and never raw: a whole error document in a toast is unreadable, and the body of a
+ * failed request is the one place a stray credential could turn up.
+ */
+function withDetail(detail: string | null | undefined): string {
+  const safe = redactSecrets(detail ?? '').trim();
+  if (safe.length === 0) return '.';
+  return `: ${safe.length > 160 ? `${safe.slice(0, 160)}...` : safe}`;
+}
+
+/** Nothing key-shaped is ever shown, logged or stored, wherever it came from. */
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/AIza[0-9A-Za-z_-]{10,}/g, '[key hidden]')
+    .replace(/(key=)[^&\s"']+/gi, '$1[key hidden]');
+}
+
 export function aiErrorMessage(error: AiError): string {
   switch (error.kind) {
     case 'missingKey':
@@ -183,8 +212,16 @@ export function aiErrorMessage(error: AiError): string {
       return 'Gemini declined to process that image. Try a different photo.';
     case 'truncated':
       return 'The reply was cut off before it finished. Try processing fewer photos at once.';
+    case 'modelUnavailable':
+      // The single most useful sentence this app can print: it names the model, says the key
+      // itself was accepted, and points at the one setting that fixes it.
+      return `Gemini does not offer "${error.model}" to this API key (HTTP 404). The key reached Google, so the key itself is fine. Open Settings and choose a different model - "Check which models my key can use" lists the ones it will accept.`;
+    case 'accessDenied':
+      return `Google refused this request (HTTP 403)${withDetail(error.detail)} The key was recognised, so this is the Google project's access to the model rather than the key itself.`;
+    case 'badRequest':
+      return `Gemini rejected the request (HTTP 400)${withDetail(error.detail)} This is the request itself, not your key or your photos.`;
     case 'serverError':
-      return 'Gemini returned an error. Try again.';
+      return `Gemini returned an error (HTTP ${error.status})${withDetail(error.detail)} Try again.`;
     case 'malformedResponse':
       return 'I got a reply I could not read. Try again.';
     case 'unknown':

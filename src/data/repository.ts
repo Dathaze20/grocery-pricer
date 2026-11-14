@@ -165,6 +165,21 @@ export class Repository {
 
   // --- items ----------------------------------------------------------------
 
+  /**
+   * Removes the rows a previous attempt at this order left behind.
+   *
+   * Processing appends, so without this a retry after a half-finished run shows every product
+   * twice and doubles the order total. Only the priced rows go; the photographs, the order and
+   * the product catalogue are untouched, which is what makes the retry safe to offer.
+   */
+  async clearItemsFor(orderId: number): Promise<number> {
+    const tx = this.db.transaction('items', 'readwrite');
+    const existing = await tx.store.index('orderId').getAllKeys(orderId);
+    for (const key of existing) await tx.store.delete(key);
+    await tx.done;
+    return existing.length;
+  }
+
   async addItems(items: ReadonlyArray<Omit<StoredItem, 'id'>>): Promise<StoredItem[]> {
     const tx = this.db.transaction('items', 'readwrite');
     const saved: StoredItem[] = [];

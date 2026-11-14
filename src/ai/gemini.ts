@@ -1,6 +1,6 @@
 import type { AiError, AiResult } from '../core/ai-types';
 import { aiFail, aiOk } from '../core/ai-types';
-import { configuredModel, generateContentUrl } from './model';
+import { configuredModel, generateContentUrl, listModelsUrl } from './model';
 
 /** One photograph on its way to Gemini: base64 payload plus its mime type. */
 export interface ImagePart {
@@ -95,10 +95,81 @@ export class GeminiClient {
     }
 
     const text = await readBody(response);
-    if (!response.ok) return aiFail(httpError(response.status, text, response.headers));
+    if (!response.ok) return aiFail(httpError(response.status, text, response.headers, model));
 
     return readCandidate(text);
   }
+}
+
+/** One model Google says this key may call. */
+export interface AvailableModel {
+  /** The name to type into Settings, e.g. `gemini-2.5-flash-lite`. */
+  readonly id: string;
+  readonly label: string;
+}
+
+/**
+ * Asks Google which models this key can actually use.
+ *
+ * This is the question a 404 raises and nothing else can answer: model names change, and a key
+ * issued today may not be offered a model that worked last month. Asking is one cheap call, it
+ * runs on the owner's own device with the key already stored there, and it turns "Gemini
+ * returned an error" into a list to choose from.
+ */
+export async function listModels(config: GeminiConfig): Promise<AiResult<readonly AvailableModel[]>> {
+  const key = config.apiKey?.trim();
+  if (key === undefined || key.length === 0) return aiFail({ kind: 'missingKey' });
+
+  const doFetch = config.fetchImpl ?? globalThis.fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs ?? 30_000);
+
+  let response: Response;
+  try {
+    response = await doFetch(listModelsUrl(), {
+      method: 'GET',
+      headers: { 'x-goog-api-key': key },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    if (controller.signal.aborted) return aiFail({ kind: 'timeout' });
+    return aiFail({ kind: 'network', detail: shortReason(error) });
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const body = await readBody(response);
+  if (!response.ok) return aiFail(httpError(response.status, body, response.headers));
+  return aiOk(parseModels(body));
+}
+
+/** Keeps only the models that can do the job this app needs: generateContent. */
+export function parseModels(body: string): readonly AvailableModel[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return [];
+  }
+  const list = (parsed as { models?: unknown })?.models;
+  if (!Array.isArray(list)) return [];
+
+  const models: AvailableModel[] = [];
+  for (const entry of list) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const name = typeof record['name'] === 'string' ? record['name'] : '';
+    const methods = record['supportedGenerationMethods'];
+    const supported = Array.isArray(methods) && methods.includes('generateContent');
+    if (!supported || !name.startsWith('models/')) continue;
+
+    const id = name.slice('models/'.length);
+    const display = typeof record['displayName'] === 'string' ? record['displayName'] : '';
+    models.push({ id, label: display.length > 0 ? display : id });
+  }
+  models.sort((a, b) => a.id.localeCompare(b.id));
+  return models;
 }
 
 async function readBody(response: Response): Promise<string> {
@@ -116,17 +187,26 @@ async function readBody(response: Response): Promise<string> {
  * "your free allowance for today is gone". Only the second one deserves the promise that nothing
  * will be charged, and only the first one is worth retrying.
  */
-export function httpError(status: number, body: string, headers?: Headers): AiError {
+export function httpError(status: number, body: string, headers?: Headers, model = ''): AiError {
   const detail = errorMessageFrom(body);
   const lower = `${detail} ${body}`.toLowerCase();
 
-  if (status === 400 && lower.includes('api key')) return { kind: 'invalidKey' };
+  // 400 that names the key is a bad key. Any other 400 is the request, and saying so stops the
+  // owner hunting through Settings for a key that was never the problem.
+  if (status === 400) {
+    return keyIsTheProblem(lower) ? { kind: 'invalidKey' } : { kind: 'badRequest', status, detail };
+  }
   if (status === 401) return { kind: 'invalidKey' };
   if (status === 403) {
-    return lower.includes('api key') || lower.includes('permission')
+    // Google uses 403 both for "this key is not valid" and for "this project may not use this".
+    // They need different answers: one is retyped in Settings, the other cannot be.
+    return keyIsTheProblem(lower)
       ? { kind: 'invalidKey' }
-      : { kind: 'serverError', status, detail };
+      : { kind: 'accessDenied', status, detail };
   }
+  // 404 is not "no such URL" here - the endpoint is fixed and correct. It is Google saying this
+  // key may not call this model, which is what happens to a new project asking for an old one.
+  if (status === 404) return { kind: 'modelUnavailable', model, status, detail };
   if (status === 413) return { kind: 'requestTooLarge' };
   if (status === 429) {
     const retryAfter = retryAfterSeconds(body, headers);
@@ -141,6 +221,25 @@ export function httpError(status: number, body: string, headers?: Headers): AiEr
   if (status === 503) return { kind: 'overloaded' };
   if (status >= 500) return { kind: 'serverError', status, detail };
   return { kind: 'serverError', status, detail };
+}
+
+/**
+ * Whether Google is complaining about the credential itself.
+ *
+ * Deliberately narrow. "permission" alone used to land here, but a project denied access to a
+ * model also says permission, and sending that owner to retype a perfectly good key wastes the
+ * one piece of information the response was carrying.
+ */
+function keyIsTheProblem(lower: string): boolean {
+  return (
+    lower.includes('api key not valid') ||
+    lower.includes('api_key_invalid') ||
+    lower.includes('invalid api key') ||
+    lower.includes('api key expired') ||
+    lower.includes('permission denied on api key') ||
+    lower.includes('unauthenticated') ||
+    lower.includes('please pass a valid api key')
+  );
 }
 
 function retryAfterSeconds(body: string, headers?: Headers): number | null {
@@ -163,10 +262,13 @@ function errorMessageFrom(body: string): string {
       }
     }
   } catch {
-    // Not JSON. Fall through: the raw body is still a usable hint, trimmed so a whole HTML
-    // error page never reaches a UI string.
+    // Not JSON, so there is nothing Google meant for a person to read.
   }
-  return body.slice(0, 200);
+  // Deliberately empty rather than a slice of the body. An unstructured failure is an HTML
+  // error page or a proxy's complaint, and putting that on a shopkeeper's screen explains
+  // nothing while risking whatever else the body happens to contain. The body is still matched
+  // against below for classification - it just never becomes something anyone reads.
+  return '';
 }
 
 /** Pulls the text out of a successful generateContent response, or explains why there isn't any. */

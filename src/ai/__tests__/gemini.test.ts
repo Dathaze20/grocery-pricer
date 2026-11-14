@@ -153,7 +153,13 @@ describe('what a failure is turned into', () => {
 
   it('never puts the raw body into what the user reads', () => {
     const error = httpError(500, '<html><body>Internal Server Error at /v1beta/models</body></html>');
-    expect(aiErrorMessage(error)).toBe('Gemini returned an error. Try again.');
+    const message = aiErrorMessage(error);
+
+    // The status is there to be reported; the error page behind it is not.
+    expect(message).toContain('HTTP 500');
+    expect(message).not.toContain('<html>');
+    expect(message).not.toContain('/v1beta/models');
+    expect(message).not.toContain('Internal Server Error');
   });
 
   it('reports a dropped connection as network, not as a bad key', async () => {

@@ -51,6 +51,9 @@ export async function processOrder(
   }
 
   await repo.updateOrder(orderId, { status: OrderStatus.PROCESSING, failureMessage: null });
+  // A retry starts from the photographs, not from whatever the last attempt managed to save.
+  // Rows are appended, so without this a second run lists every product twice.
+  await repo.clearItemsFor(orderId);
   progress('Reading the photos');
 
   const parts: IdentifiedImage[] = [];
