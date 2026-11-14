@@ -1,16 +1,17 @@
 import { useEffect } from 'react';
-import { updates } from './updates';
+import { updates, type HoldKind } from './updates';
 
 /**
- * Holds off an update for as long as `active` is true.
+ * Holds off an update for as long as `active` is true and this component is mounted.
  *
- * Used for work that must not be interrupted even if the screen changes underneath it - a
- * receipt being read, a question in flight, a delivery being counted. Leaving the screen is not
- * the same as finishing the work.
+ * Only for state that genuinely belongs to the screen, such as a half-typed message that
+ * navigating away discards anyway. Work that outlives its screen - a receipt being read, a
+ * question in flight, a delivery being counted - must take its own hold around the operation
+ * and release it in a finally, or Back would release it while the request is still running.
  */
-export function useUpdateHold(active: boolean): void {
+export function useUpdateHold(active: boolean, kind: HoldKind = 'soft'): void {
   useEffect(() => {
     if (!active) return;
-    return updates.hold();
-  }, [active]);
+    return updates.hold(kind);
+  }, [active, kind]);
 }

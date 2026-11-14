@@ -9,7 +9,7 @@ import type { Screen } from '../App';
 import { PhotoGrid } from '../components/PhotoGrid';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
-import { useUpdateHold } from '../useUpdateHold';
+import { updates } from '../updates';
 import { providerFor } from '../services';
 
 /**
@@ -31,8 +31,6 @@ export function DeliveryCheck(props: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Counting cases costs quota; a reload halfway spends it for nothing.
-  useUpdateHold(busy);
 
 
   const reload = useCallback(async () => {
@@ -70,6 +68,9 @@ export function DeliveryCheck(props: {
   const run = useCallback(async () => {
     setBusy(true);
     setError(null);
+    // Counting costs quota, and the hold has to outlive the screen: leaving it does not call
+    // the count back.
+    const release = updates.hold('blocking');
     try {
       const provider = await providerFor(repo);
       const result = await checkDelivery(repo, provider, orderId, photos.map((p) => p.id));
@@ -81,6 +82,7 @@ export function DeliveryCheck(props: {
       await reload();
     } finally {
       setBusy(false);
+      release();
     }
   }, [repo, orderId, photos, reload]);
 

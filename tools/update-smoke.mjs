@@ -25,6 +25,25 @@ const BASE_PATH = '/grocery-pricer/';
 const PORT = 4186;
 const BASE = `http://127.0.0.1:${PORT}${BASE_PATH}`;
 const V2_TITLE = 'Grocery Pricer Mk II';
+const V3_TITLE = 'Grocery Pricer Mk III';
+
+/** A 1x1 JPEG. The model is faked, so the pixels do not matter. */
+const JPEG = Buffer.from(
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a' +
+    'HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAA' +
+    'AAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==',
+  'base64',
+);
+
+function geminiReply(body) {
+  return {
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(body) }] }, finishReason: 'STOP' }],
+    }),
+  };
+}
 /** Mirrors MIN_CHECK_GAP_MS in src/ui/pwa.ts. */
 const MIN_CHECK_GAP_MS = 10 * 1000;
 
@@ -84,6 +103,7 @@ function chromeIn(root) {
 const work = mkdtempSync(join(tmpdir(), 'gp-update-'));
 const served = join(work, 'served');
 const second = join(work, 'v2');
+const third = join(work, 'v3');
 const indexHtml = 'index.html';
 const originalIndex = readFileSync(indexHtml, 'utf8');
 let server;
@@ -98,6 +118,11 @@ try {
   writeFileSync(indexHtml, originalIndex.replace('<title>Grocery Pricer</title>', `<title>${V2_TITLE}</title>`));
   build();
   cpSync('dist', second, { recursive: true });
+
+  console.log('building a third version, for the interrupted-work test…');
+  writeFileSync(indexHtml, originalIndex.replace('<title>Grocery Pricer</title>', `<title>${V3_TITLE}</title>`));
+  build();
+  cpSync('dist', third, { recursive: true });
   writeFileSync(indexHtml, originalIndex);
 
   server = await serve(served);
@@ -199,6 +224,121 @@ try {
   await page.waitForTimeout(1500);
   check('an offline check changes nothing', await page.locator('#key').isVisible());
   await context.setOffline(false);
+
+  // ---------------------------------------------------------------------------
+  // A request still in the air after its screen has gone.
+  //
+  // Pressing Back during processing unmounts the screen while the receipt is still being read.
+  // Anything that tied the hold to the screen would release it there, and an update waiting in
+  // the wings would reload the page on top of a half-read order.
+  // ---------------------------------------------------------------------------
+  console.log('\n--- a receipt still being read after Back ---');
+
+  const second_ = await browser.newContext({ viewport: { width: 412, height: 915 }, isMobile: true, hasTouch: true });
+  const work_ = await second_.newPage();
+
+  let releaseGemini = () => {};
+  const geminiHeld = new Promise((resolve) => {
+    releaseGemini = resolve;
+  });
+  await second_.route('https://generativelanguage.googleapis.com/**', async (route) => {
+    // Held open so the request is genuinely in flight for as long as the test needs.
+    await geminiHeld;
+    const prompt = JSON.stringify(route.request().postDataJSON()?.contents ?? '');
+    if (prompt.includes('"images"') || prompt.includes('RECEIPT:')) {
+      await route.fulfill(geminiReply({ images: [{ photoId: 1, type: 'RECEIPT', confidence: 0.9 }] }));
+      return;
+    }
+    await route.fulfill(
+      geminiReply({
+        supplier: 'JETRO',
+        items: [
+          {
+            rawName: 'CORN OIL 48Z',
+            canonicalName: 'Corn Oil',
+            size: '48 OZ',
+            casePrice: '30.00',
+            unitsPerCase: 6,
+            casesPurchased: 1,
+            sourcePhotoIds: [1],
+            sourceText: ['CORN OIL 48Z 30.00'],
+            confidence: 0.9,
+          },
+        ],
+        warnings: [],
+      }),
+    );
+  });
+
+  let workLoads = 0;
+  work_.on('load', () => {
+    workLoads += 1;
+  });
+
+  await work_.goto(BASE, { waitUntil: 'networkidle' });
+  await work_.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30000 });
+  const installedTitle = await work_.title();
+
+  await work_.click('text=Settings');
+  await work_.fill('#key', 'AIzaKeyForTheInterruptedRun');
+  await work_.click('button:has-text("Save")');
+  await work_.waitForTimeout(300);
+  await work_.click('button:has-text("Back")');
+
+  await work_.click('text=NEW ORDER');
+  await work_.setInputFiles('input[type=file]:not([multiple])', {
+    name: 'receipt.jpg',
+    mimeType: 'image/jpeg',
+    buffer: JPEG,
+  });
+  await work_.waitForSelector('.photo img');
+  await work_.click('button[aria-label="Process order"]');
+
+  // Back, while the receipt is still being read.
+  await work_.click('button:has-text("Back")');
+  await work_.waitForSelector('text=NEW ORDER');
+  check('Back during processing returns to the home screen', true);
+
+  // A deployment lands at the worst possible moment.
+  cpSync(third, served, { recursive: true });
+  await work_.waitForTimeout(MIN_CHECK_GAP_MS + 1000);
+  await work_.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await work_.waitForSelector('.update-banner', { timeout: 30000 });
+
+  const loadsWhileWorking = workLoads;
+  await work_.waitForTimeout(3000);
+  check(
+    'leaving the screen does not release the hold on a running request',
+    workLoads === loadsWhileWorking && (await work_.title()) === installedTitle,
+    `${workLoads - loadsWhileWorking} reload(s) while the receipt was still being read`,
+  );
+
+  // Asking for it outright must not override work in flight either: the person tapping cannot
+  // see that a request is still running.
+  await work_.click('.update-banner');
+  await work_.waitForTimeout(2000);
+  check(
+    'tapping the update does not interrupt the request',
+    workLoads === loadsWhileWorking && (await work_.title()) === installedTitle,
+  );
+  check(
+    'it says the update is waiting for the work to finish',
+    (await work_.locator('.update-banner').innerText()).toLowerCase().includes('when this finishes'),
+  );
+
+  // The receipt finally comes back.
+  releaseGemini();
+  await work_.waitForFunction((title) => document.title === title, V3_TITLE, { timeout: 30000 });
+  check('the update lands once the request has settled', (await work_.title()) === V3_TITLE);
+
+  // And the order the request was for is still there.
+  await work_.waitForSelector('text=NEW ORDER', { timeout: 15000 });
+  check(
+    'the order the receipt was read into survived',
+    (await work_.locator('text=/1 product|Corn Oil/').count()) > 0,
+  );
+
+  await second_.close();
 } finally {
   writeFileSync(indexHtml, originalIndex);
   if (browser !== undefined) await browser.close();

@@ -60,7 +60,8 @@ export function App(): JSX.Element {
   // to lose, so an update that arrives while sitting there applies immediately.
   useEffect(() => {
     if (screen.kind === 'home') return;
-    return updates.hold();
+    // Soft: nothing here is mid-flight, so someone asking for the update gets it.
+    return updates.hold('soft');
   }, [screen.kind]);
 
   // The phone's back gesture should leave the screen, not the app.

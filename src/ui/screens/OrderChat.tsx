@@ -7,6 +7,7 @@ import { MessageRole, type StoredMessage, type StoredOrder } from '../../data/sc
 import type { Screen } from '../App';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
+import { updates } from '../updates';
 import { useUpdateHold } from '../useUpdateHold';
 import { CameraIcon, SendIcon } from '../components/icons';
 import { providerFor } from '../services';
@@ -24,8 +25,9 @@ export function OrderChat(props: {
 
   const bottom = useRef<HTMLDivElement>(null);
 
-  // A question in flight, or one half typed, is work a reload would throw away.
-  useUpdateHold(busy || text.trim().length > 0);
+  // A half-typed question would be thrown away by a reload. This one does belong to the screen:
+  // leaving it discards the draft regardless. The request itself is held in send(), below.
+  useUpdateHold(text.trim().length > 0, 'blocking');
 
   const reload = useCallback(async () => {
     setOrder(await repo.order(orderId));
@@ -46,6 +48,8 @@ export function OrderChat(props: {
       if (trimmed.length === 0 && file === undefined) return;
       setBusy(true);
       setText('');
+      // Held by the question, not by the screen: the answer is still coming after Back.
+      const release = updates.hold('blocking');
       try {
         const provider = await providerFor(repo);
         let photo = null;
@@ -67,6 +71,7 @@ export function OrderChat(props: {
       } finally {
         await reload();
         setBusy(false);
+        release();
       }
     },
     [repo, orderId, reload],

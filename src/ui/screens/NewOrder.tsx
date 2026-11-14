@@ -8,7 +8,7 @@ import type { Screen } from '../App';
 import { PhotoGrid } from '../components/PhotoGrid';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
-import { useUpdateHold } from '../useUpdateHold';
+import { updates } from '../updates';
 import { providerFor } from '../services';
 
 export function NewOrder(props: {
@@ -23,8 +23,6 @@ export function NewOrder(props: {
   const [step, setStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // A reload here would abandon a receipt mid-upload, so the hold lasts as long as the work.
-  useUpdateHold(busy);
 
   const reload = useCallback(async () => {
     setPhotos(await repo.photosFor(orderId, false));
@@ -64,6 +62,10 @@ export function NewOrder(props: {
     setBusy(true);
     setError(null);
     setStep('Starting');
+    // Held by the work, not by this screen. Pressing Back mid-receipt unmounts the screen while
+    // the request is still in the air; an update that landed then would reload the page out
+    // from under it and leave the order stuck half read.
+    const release = updates.hold('blocking');
     try {
       const provider = await providerFor(repo);
       const result = await processOrder(repo, provider, orderId, { onProgress: setStep });
@@ -76,6 +78,7 @@ export function NewOrder(props: {
     } finally {
       setBusy(false);
       setStep(null);
+      release();
     }
   }, [repo, orderId, go]);
 

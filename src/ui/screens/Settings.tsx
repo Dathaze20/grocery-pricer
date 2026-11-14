@@ -3,6 +3,7 @@ import { GEMINI_API_KEY_URL, SUGGESTED_GEMINI_MODELS, configuredModel } from '..
 import type { Repository } from '../../data/repository';
 import type { Screen } from '../App';
 import { TopBar } from '../components/TopBar';
+import { useUpdateHold } from '../useUpdateHold';
 import { Toast } from '../components/Toast';
 import { CheckIcon } from '../components/icons';
 
@@ -24,6 +25,9 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   // database, and someone who pastes their key in that moment must not have it wiped from under
   // them - which looks exactly like the app losing the key they just pasted.
   const edited = useRef(false);
+  // A key typed but not yet saved is unsaved work; a reload would throw it away.
+  const [dirty, setDirty] = useState(false);
+  useUpdateHold(dirty, 'blocking');
 
   useEffect(() => {
     void repo.apiKey().then((stored) => {
@@ -42,6 +46,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
     if (hadKey) await repo.setApiKey(key);
     await repo.setModel(model);
     setSaved(true);
+    setDirty(false);
     setToast(hadKey ? 'Key saved' : 'Model saved');
     setTimeout(() => setSaved(false), 2500);
     // Cleared so the same message can be shown again on the next save.
@@ -77,6 +82,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
             placeholder="AIza…"
             onChange={(event) => {
               edited.current = true;
+              setDirty(true);
               setKey(event.target.value);
             }}
           />
@@ -93,6 +99,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
             placeholder="Default"
             onChange={(event) => {
               edited.current = true;
+              setDirty(true);
               setModel(event.target.value);
             }}
           />
@@ -118,6 +125,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
               className="secondary danger"
               onClick={() => {
                 edited.current = true;
+                setDirty(false);
                 setKey('');
                 void repo.setApiKey(null);
                 setToast('Key removed');
