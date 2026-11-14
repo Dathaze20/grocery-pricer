@@ -7,6 +7,7 @@ import { MessageRole, type StoredMessage, type StoredOrder } from '../../data/sc
 import type { Screen } from '../App';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
+import { CameraIcon, SendIcon } from '../components/icons';
 import { providerFor } from '../services';
 
 export function OrderChat(props: {
@@ -117,7 +118,7 @@ export function OrderChat(props: {
             aria-label="Send"
             onClick={() => void send(text)}
           >
-            ➤
+            <SendIcon />
           </button>
         </div>
       </main>
@@ -137,7 +138,7 @@ function PhotoPickerButton(props: { disabled: boolean; onPick: (file: File) => v
         aria-label="Attach a photo"
         onClick={() => setOpen(true)}
       >
-        📷
+        <CameraIcon />
       </button>
     );
   }

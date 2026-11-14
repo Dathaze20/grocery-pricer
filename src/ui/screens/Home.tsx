@@ -14,7 +14,12 @@ export function Home(props: { repo: Repository; go: (screen: Screen) => void }):
   const [keyed, setKeyed] = useState<boolean | null>(null);
 
   useEffect(() => {
-    void repo.recentOrders(15).then(setOrders);
+    // Clear out abandoned empty drafts before listing, so backing out of NEW ORDER does not
+    // leave a row that says "Not processed yet" and has nothing in it to process.
+    void repo
+      .deleteEmptyDrafts()
+      .then(() => repo.recentOrders(15))
+      .then(setOrders);
     void hasKey(repo).then(setKeyed);
   }, [repo]);
 

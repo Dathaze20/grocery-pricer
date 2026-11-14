@@ -129,6 +129,10 @@ async function main() {
     await page.click('button:has-text("Save")');
     await page.waitForTimeout(200);
     check('the key saves', (await page.locator('button:has-text("Saved")').count()) === 1);
+    check(
+      'saving says so unmistakably',
+      await page.locator('.toast', { hasText: 'Key saved' }).isVisible(),
+    );
     check('the typed key survived the stored one loading', (await page.inputValue('#key')) === 'AIza-test-key');
 
     const link = page.locator('a:has-text("Get a free Gemini API key")');
@@ -166,8 +170,21 @@ async function main() {
     );
 
     // --- an order ---------------------------------------------------------
+    // Backing out of a new order must not leave an empty row behind: the order is created when
+    // the button is pressed, so an abandoned one is litter that buries the real orders.
     await page.click('text=NEW ORDER');
-    check('processing is refused with no photos', await page.isDisabled('text=PROCESS ORDER'));
+    await page.click('button:has-text("Back")');
+    await page.waitForTimeout(300);
+    check(
+      'backing out of a new order leaves nothing behind',
+      (await page.locator('text=Not processed yet').count()) === 0,
+    );
+
+    await page.click('text=NEW ORDER');
+    check(
+      'processing is refused with no photos',
+      await page.isDisabled('button[aria-label="Process order"]'),
+    );
 
     await page.setInputFiles('input[type=file]:not([multiple])', {
       name: 'receipt.jpg',
@@ -177,7 +194,7 @@ async function main() {
     await page.waitForSelector('.photo img');
     check('a photographed receipt appears', (await page.locator('.photo').count()) === 1);
 
-    await page.click('text=PROCESS ORDER');
+    await page.click('button[aria-label="Process order"]');
     await waitOrExplain(page, '.bubble.app', { served, errors });
     const opening = await page.locator('.bubble.app').first().innerText();
     check('the order is summarised', opening.includes('1 product'), opening);

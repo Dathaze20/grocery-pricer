@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { CameraIcon, GalleryIcon } from './icons';
 
 /**
  * Two separate inputs, on purpose.
@@ -47,7 +48,8 @@ export function PhotoPicker(props: {
         disabled={props.disabled === true}
         onClick={() => camera.current?.click()}
       >
-        📷 {props.cameraLabel ?? 'Take a photo'}
+        <CameraIcon />
+        {props.cameraLabel ?? 'Take a photo'}
       </button>
       <button
         type="button"
@@ -55,7 +57,8 @@ export function PhotoPicker(props: {
         disabled={props.disabled === true}
         onClick={() => gallery.current?.click()}
       >
-        🖼 {props.galleryLabel ?? 'Choose'}
+        <GalleryIcon />
+        {props.galleryLabel ?? 'Choose'}
       </button>
     </div>
   );
