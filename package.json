@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:browser": "node tools/smoke.mjs",
-    "icons": "python3 tools/make_icons.py"
+    "icons": "python3 tools/make_icons.py",
+    "test:update": "node tools/update-smoke.mjs"
   },
   "dependencies": {
     "idb": "^8.0.0",

@@ -8,6 +8,7 @@ import type { Screen } from '../App';
 import { PhotoGrid } from '../components/PhotoGrid';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
+import { useUpdateHold } from '../useUpdateHold';
 import { providerFor } from '../services';
 
 export function NewOrder(props: {
@@ -18,8 +19,12 @@ export function NewOrder(props: {
   const { repo, orderId, go } = props;
   const [photos, setPhotos] = useState<StoredPhoto[]>([]);
   const [busy, setBusy] = useState(false);
+
   const [step, setStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // A reload here would abandon a receipt mid-upload, so the hold lasts as long as the work.
+  useUpdateHold(busy);
 
   const reload = useCallback(async () => {
     setPhotos(await repo.photosFor(orderId, false));

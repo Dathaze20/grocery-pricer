@@ -7,6 +7,8 @@ import { OrderChat } from './screens/OrderChat';
 import { DeliveryCheck } from './screens/DeliveryCheck';
 import { Settings } from './screens/Settings';
 import { OrderItems } from './screens/OrderItems';
+import { UpdateBanner } from './components/UpdateBanner';
+import { updates } from './updates';
 
 export type Screen =
   | { kind: 'home' }
@@ -52,6 +54,15 @@ export function App(): JSX.Element {
     [repo],
   );
 
+  // Hold updates off anywhere but the home screen. Applying one reloads the page, and every
+  // other screen has something a reload would interrupt or lose: photos queued for processing,
+  // a question being answered, an API key typed but not yet saved. The home screen has nothing
+  // to lose, so an update that arrives while sitting there applies immediately.
+  useEffect(() => {
+    if (screen.kind === 'home') return;
+    return updates.hold();
+  }, [screen.kind]);
+
   // The phone's back gesture should leave the screen, not the app.
   useEffect(() => {
     const onPop = (): void => setScreen({ kind: 'home' });
@@ -88,6 +99,19 @@ export function App(): JSX.Element {
     );
   }
 
+  return (
+    <>
+      {currentScreen(screen, repo, go)}
+      <UpdateBanner />
+    </>
+  );
+}
+
+function currentScreen(
+  screen: Screen,
+  repo: Repository,
+  go: (next: Screen) => void,
+): JSX.Element {
   switch (screen.kind) {
     case 'home':
       return <Home repo={repo} go={go} />;

@@ -9,6 +9,7 @@ import type { Screen } from '../App';
 import { PhotoGrid } from '../components/PhotoGrid';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
+import { useUpdateHold } from '../useUpdateHold';
 import { providerFor } from '../services';
 
 /**
@@ -29,6 +30,10 @@ export function DeliveryCheck(props: {
   const [summary, setSummary] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Counting cases costs quota; a reload halfway spends it for nothing.
+  useUpdateHold(busy);
+
 
   const reload = useCallback(async () => {
     const all = await repo.photosFor(orderId);

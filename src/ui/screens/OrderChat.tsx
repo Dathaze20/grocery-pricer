@@ -7,6 +7,7 @@ import { MessageRole, type StoredMessage, type StoredOrder } from '../../data/sc
 import type { Screen } from '../App';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
+import { useUpdateHold } from '../useUpdateHold';
 import { CameraIcon, SendIcon } from '../components/icons';
 import { providerFor } from '../services';
 
@@ -20,7 +21,11 @@ export function OrderChat(props: {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+
   const bottom = useRef<HTMLDivElement>(null);
+
+  // A question in flight, or one half typed, is work a reload would throw away.
+  useUpdateHold(busy || text.trim().length > 0);
 
   const reload = useCallback(async () => {
     setOrder(await repo.order(orderId));
