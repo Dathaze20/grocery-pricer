@@ -79,6 +79,16 @@ jobs:
           path: dist
           if-no-files-found: error
 
+      # Packaged here rather than in the deploy job so that it is uploaded exactly once per
+      # run. Uploading it from the deploy job means re-running that job adds a second artifact
+      # of the same name, and deploy-pages then refuses the run for good: "Multiple artifacts
+      # named github-pages were unexpectedly found".
+      - name: Package the site for Pages
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
   deploy:
     name: Deploy to GitHub Pages
     needs: build
@@ -95,20 +105,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build the PWA
-        run: npm run build
+      # No checkout or build: the site was built and packaged by the job above, so this job
+      # only publishes it. That also keeps the deploy job safe to re-run on its own.
 
       # enablement asks GitHub to create the Pages site if it does not exist. It is
       # not enough on its own: the Actions token is usually refused ("Resource not
@@ -119,11 +117,6 @@ jobs:
         uses: actions/configure-pages@v5
         with:
           enablement: true
-
-      - name: Upload the site
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
 
       - name: Deploy
         id: deployment
