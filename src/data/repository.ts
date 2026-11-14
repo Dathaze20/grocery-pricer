@@ -1,6 +1,6 @@
 import type { IDBPDatabase } from 'idb';
 import { Money } from '../core/money';
-import { NameNormalizer, normalizeUpc } from '../core/matching';
+import { NameNormalizer, normalizeUpc, upcEquivalent } from '../core/matching';
 import { Category, guessCategory } from '../core/models';
 import { openGroceryDb, type GroceryDb } from './db';
 import {
@@ -248,8 +248,11 @@ export class Repository {
     const sku = input.supplierSku?.trim() ?? '';
     const variant = input.variant?.trim() ?? null;
 
+    // An abbreviation is only recorded against a product when something else proved the match:
+    // a barcode or the supplier's own item number. A name a model expanded is a guess, and a
+    // guess written into memory is a guess the app will trust forever afterwards.
     if (upc.length > 0) {
-      const byUpc = await this.db.getFromIndex('products', 'upc', upc);
+      const byUpc = await this.findByBarcode(upc, input.upc ?? null);
       if (byUpc !== undefined) return this.touchProduct(byUpc, alias);
     }
 
@@ -260,7 +263,9 @@ export class Repository {
 
     if (alias.length > 0) {
       const all = await this.db.getAll('products');
-      const byAlias = all.find((product) => product.aliases.includes(alias));
+      // Products saved before aliases existed have no such field; reading it as a list would
+      // throw and take the whole lookup with it.
+      const byAlias = all.find((product) => (product.aliases ?? []).includes(alias));
       if (byAlias !== undefined) return this.touchProduct(byAlias, alias);
     }
 
@@ -268,7 +273,9 @@ export class Repository {
     const match = candidates.find(
       (c) => (c.size ?? null) === (input.size ?? null) && (c.variant ?? null) === variant,
     );
-    if (match !== undefined) return this.touchProduct(match, alias);
+    // Matched on the name alone, which is not proof of identity, so the abbreviation is not
+    // learned here. Approving a price is what confirms it.
+    if (match !== undefined) return this.touchProduct(match);
 
     const now = Date.now();
     const created: Omit<StoredProduct, 'id'> = {
@@ -278,7 +285,8 @@ export class Repository {
       variant,
       upc: upc.length > 0 ? upc : null,
       supplierSku: sku.length > 0 ? sku : null,
-      aliases: alias.length > 0 ? [alias] : [],
+      // A brand-new product has confirmed nothing yet.
+      aliases: [],
       category: input.category ?? guessCategory(input.displayName),
       lastCost: null,
       lastRetailPrice: null,
@@ -288,6 +296,28 @@ export class Repository {
     };
     const id = await this.db.add('products', created as StoredProduct);
     return { ...created, id };
+  }
+
+  /**
+   * Finds a product by barcode, whichever way the digits were written down.
+   *
+   * The same product is printed as 12 digits on one receipt and 13 on another, differing only
+   * by leading zeros, and rows saved by older versions kept whatever the receipt showed. The
+   * index is tried first because it is fast; the scan behind it is what makes the two spellings
+   * one product rather than two.
+   */
+  private async findByBarcode(
+    normalized: string,
+    raw: string | null,
+  ): Promise<StoredProduct | undefined> {
+    const indexed = await this.db.getFromIndex('products', 'upc', normalized);
+    if (indexed !== undefined) return indexed;
+    if (raw !== null && raw.trim() !== normalized) {
+      const asPrinted = await this.db.getFromIndex('products', 'upc', raw.trim());
+      if (asPrinted !== undefined) return asPrinted;
+    }
+    const all = await this.db.getAll('products');
+    return all.find((product) => upcEquivalent(product.upc, normalized));
   }
 
   /** Records a receipt abbreviation against a product the shop has confirmed it belongs to. */

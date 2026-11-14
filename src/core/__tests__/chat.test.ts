@@ -140,7 +140,9 @@ describe('ChatAnswerFormatter', () => {
   };
 
   it('renders one product exactly as the brief specifies', () => {
-    expect(ChatAnswerFormatter.single(mayo)).toBe("Hellmann's Mayonnaise 8 oz\n$2.17 → $4.99");
+    expect(ChatAnswerFormatter.single(mayo)).toBe(
+      "Hellmann's Mayonnaise 8 oz\n$2.17 each → $4.99 (suggested)",
+    );
   });
 
   it('numbers several products', () => {
@@ -150,9 +152,9 @@ describe('ChatAnswerFormatter', () => {
       { itemId: 3, displayName: 'Red & White Corn Oil', size: '32 oz', unitCost: Money.of('3.35'), suggestedRetail: Money.of('6.99') },
     ];
     expect(ChatAnswerFormatter.numbered(oils)).toBe(
-      '1. Red & White Vegetable Oil 48 oz\n$4.36 → $7.99\n\n' +
-        '2. Red & White Corn Oil 48 oz\n$4.64 → $8.99\n\n' +
-        '3. Red & White Corn Oil 32 oz\n$3.35 → $6.99',
+      '1. Red & White Vegetable Oil 48 oz\n   $4.36 each → $7.99 (suggested)\n' +
+        '2. Red & White Corn Oil 48 oz\n   $4.64 each → $8.99 (suggested)\n' +
+        '3. Red & White Corn Oil 32 oz\n   $3.35 each → $6.99 (suggested)',
     );
   });
 

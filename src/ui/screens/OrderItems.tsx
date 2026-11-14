@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Money } from '../../core/money';
 import { ItemConfidence } from '../../core/models';
 import { NameNormalizer } from '../../core/matching';
+import { CostCalculator } from '../../core/cost';
+import { makeDiscount, type DiscountScope } from '../../core/models';
 import { caseEconomics, priceForTargetProfit, stepProfitTarget } from '../../core/profit';
 import { APPROVED_PRICE_BELOW_COST } from '../../app/processing';
 import type { Repository } from '../../data/repository';
 import type { StoredItem } from '../../data/schema';
 import type { Screen } from '../App';
 import { TopBar } from '../components/TopBar';
+import { useUpdateHold } from '../useUpdateHold';
 import { Toast } from '../components/Toast';
 import { CheckIcon } from '../components/icons';
 
@@ -106,12 +109,12 @@ function ItemRow(props: {
   const { repo, item } = props;
 
   const unitsPerCase = item.unitsPerCase ?? null;
-  const netCaseCost =
-    item.casePrice === null
-      ? null
-      : Money.fromStorage(item.casePrice).minus(
-          item.discount === null ? Money.ZERO : Money.fromStorage(item.discount.amount),
-        );
+  // Subtracting the printed discount from the case price is only right for a whole-case
+  // discount. A per-unit discount multiplies by the pack count, a subset discount applies to
+  // some of it, a custom one is spread over the cases bought, and an unknown one must not move
+  // the cost at all. CostCalculator already knows all of that and is what priced this order, so
+  // the screen asks it rather than doing different arithmetic and disagreeing with itself.
+  const netCaseCost = netCaseCostOf(item);
 
   const approved = item.approvedPrice === null ? null : Money.fromStorage(item.approvedPrice);
   const suggested = item.suggestedPrice === null ? null : Money.fromStorage(item.suggestedPrice);
@@ -121,6 +124,14 @@ function ItemRow(props: {
   const [draft, setDraft] = useState<Money | null>(live);
   const [priceText, setPriceText] = useState(live === null ? '' : live.toPlainString());
   const [targetText, setTargetText] = useState('');
+  /**
+   * True while the box holds something that is not yet a price.
+   *
+   * Half-typed input must not be saved, and it must not save the *previous* value either: a box
+   * reading "6." with $4.99 still in state would otherwise store $4.99 while the screen shows
+   * something else entirely.
+   */
+  const [typing, setTyping] = useState(false);
   /**
    * What the owner asked the case to earn, when they have asked.
    *
@@ -134,6 +145,7 @@ function ItemRow(props: {
   useEffect(() => {
     setDraft(live);
     setPriceText(live === null ? '' : live.toPlainString());
+    setTyping(false);
     // Only when the stored price itself changes - typing must not be overwritten.
   }, [item.approvedPrice, item.suggestedPrice]);
 
@@ -152,10 +164,15 @@ function ItemRow(props: {
   const dirty = (draft?.toStorage() ?? null) !== (live?.toStorage() ?? null);
   const unapproved = approved === null && draft !== null;
 
+  // A price typed and not yet saved is unsaved work. An automatic update reloads the page, and
+  // a reload here throws the edit away silently.
+  useUpdateHold(dirty || typing, 'blocking');
+
   const setPrice = useCallback((price: Money) => {
     const safe = price.isNegative ? Money.ZERO : price.roundedToCents();
     setDraft(safe);
     setPriceText(safe.toPlainString());
+    setTyping(false);
   }, []);
 
   /** + and - move the target profit on the case by a dollar, then work back to a shelf price. */
@@ -180,14 +197,16 @@ function ItemRow(props: {
   }, [netCaseCost, unitsPerCase, targetText, setPrice]);
 
   const save = useCallback(async () => {
-    if (draft === null) return;
+    // Saving what is in the box, not what used to be: an unparseable box saves nothing.
+    if (draft === null || typing) return;
     await repo.approvePrice(item.id, draft);
     await props.onSaved(`Saved ${item.displayName}`);
-  }, [repo, item.id, item.displayName, draft, props]);
+  }, [repo, item.id, item.displayName, draft, typing, props]);
 
   const cancel = useCallback(() => {
     setDraft(live);
     setTarget(null);
+    setTyping(false);
     setPriceText(live === null ? '' : live.toPlainString());
   }, [live]);
 
@@ -268,9 +287,11 @@ function ItemRow(props: {
                 value={priceText}
                 aria-label={`Selling price for ${item.displayName}`}
                 onChange={(event) => {
-                  setPriceText(event.target.value);
+                  const text = event.target.value;
+                  setPriceText(text);
                   setTarget(null);
-                  const parsed = Money.parseOrNull(event.target.value);
+                  const parsed = Money.parseOrNull(text);
+                  setTyping(parsed === null && text.trim().length > 0);
                   if (parsed !== null) setDraft(parsed.isNegative ? Money.ZERO : parsed);
                 }}
               />
@@ -285,7 +306,9 @@ function ItemRow(props: {
             </button>
           </div>
 
-          {dirty ? (
+          {typing && <p className="notice warn">That is not a price yet.</p>}
+
+          {dirty && !typing ? (
             <div className="row">
               <button
                 type="button"
@@ -300,7 +323,8 @@ function ItemRow(props: {
               </button>
             </div>
           ) : (
-            unapproved && (
+            unapproved &&
+            !typing && (
               // Taking the suggestion is a decision too, and it is the common one. Until it is
               // made the price stays labelled a suggestion.
               <button
@@ -410,6 +434,29 @@ function TargetReadout(props: {
       shelf prices move in whole cents, so {target.format()} exactly is not reachable.
     </p>
   );
+}
+
+/** The net cost of one case, from the same engine that priced the order. */
+function netCaseCostOf(item: StoredItem): Money | null {
+  if (item.casePrice === null || item.unitsPerCase === null || item.unitsPerCase <= 0) return null;
+  const casePrice = Money.fromStorage(item.casePrice);
+  const discount =
+    item.discount === null
+      ? null
+      : makeDiscount(
+          item.discount.description,
+          Money.fromStorage(item.discount.amount),
+          item.discount.scope as DiscountScope,
+          item.discount.appliesToUnits,
+        );
+
+  return CostCalculator.calculate({
+    casePrice,
+    unitsPerCase: item.unitsPerCase,
+    casesPurchased: Math.max(item.casesPurchased, 1),
+    looseUnits: item.looseUnits,
+    discount,
+  }).netCaseCost;
 }
 
 function profitTone(profit: Money | null): string {

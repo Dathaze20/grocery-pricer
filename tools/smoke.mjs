@@ -75,6 +75,19 @@ async function main() {
       const post = route.request().postDataJSON();
       const prompt = JSON.stringify(post?.contents ?? '');
 
+      if (prompt.includes('\\"products\\"') || prompt.includes('Identify every distinct product')) {
+        served.push('identification');
+        await route.fulfill(
+          geminiReply({
+            products: [
+              { brand: 'HELLMANNS', productName: 'Mayonnaise', size: '8 OZ', variant: null, upc: null, position: 0, confidence: 0.93 },
+            ],
+            warnings: [],
+          }),
+        );
+        return;
+      }
+
       if (prompt.includes('"images"') || prompt.includes('RECEIPT:')) {
         served.push('classification');
         await route.fulfill(
@@ -216,6 +229,32 @@ async function main() {
       'an ordinary question spends no quota',
       calls.length === callsBeforeQuestion,
       `${calls.length - callsBeforeQuestion} extra call(s)`,
+    );
+
+    // --- photograph to price ------------------------------------------------
+    // The receipt is processed. Now somebody photographs what they are unpacking and asks.
+    await page.click('button[aria-label="Attach a photo"]');
+    // The inputs are deliberately hidden - the camera is opened by the visible button - so the
+    // file is handed to the element itself rather than clicked into it.
+    await page.waitForTimeout(300);
+    await page.locator('.composer input[type=file]:not([multiple])').setInputFiles({
+      name: 'product.jpg',
+      mimeType: 'image/jpeg',
+      buffer: JPEG,
+    });
+    await page.waitForFunction(() => document.querySelectorAll('.bubble').length >= 5, null, {
+      timeout: 20000,
+    });
+    const photoAnswer = await page.locator('.bubble.reply').last().innerText();
+    check(
+      'a photographed product is priced from the receipt',
+      photoAnswer.includes('$2.00 each → $4.99 (suggested)'),
+      photoAnswer,
+    );
+    check(
+      'and the answer stays short',
+      !/margin|markup|%/i.test(photoAnswer) && photoAnswer.split('\n').length <= 3,
+      photoAnswer,
     );
 
     // --- profit per case ---------------------------------------------------

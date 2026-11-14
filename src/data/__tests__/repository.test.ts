@@ -126,7 +126,7 @@ describe('finding a product again', () => {
     expect(again.id).toBe(first.id);
   });
 
-  it('learns a receipt abbreviation and uses it next time', async () => {
+  it('does not take an unconfirmed abbreviation as proof of identity', async () => {
     const created = await repo.findOrCreateProduct({
       displayName: 'Example Evaporated Milk',
       size: '12 OZ',
@@ -134,15 +134,36 @@ describe('finding a product again', () => {
       receiptName: 'EXMP EVAP MILK 12Z',
     });
 
-    // Next receipt: the abbreviation alone, with the size printed differently.
+    // Nothing confirmed that this expansion was right, so the abbreviation is not learned and
+    // cannot later vouch for a different product on its own.
+    expect(created.aliases).toEqual([]);
+  });
+
+  it('learns an abbreviation when a barcode proves the match', async () => {
+    const created = await repo.findOrCreateProduct({
+      displayName: 'Example Evaporated Milk',
+      size: '12 OZ',
+      upc: '012345678905',
+    });
+
     const again = await repo.findOrCreateProduct({
+      displayName: 'EXMP EVAP MILK 12Z',
+      size: null,
+      upc: '012345678905',
+      receiptName: 'EXMP EVAP MILK 12Z',
+    });
+
+    expect(again.id).toBe(created.id);
+    expect(again.aliases).toContain('EXMP EVAP MILK');
+
+    // And from then on the abbreviation alone finds it, with no barcode printed.
+    const third = await repo.findOrCreateProduct({
       displayName: 'EXMP EVAP MILK 12Z',
       size: null,
       upc: null,
       receiptName: 'EXMP EVAP MILK 12Z',
     });
-
-    expect(again.id).toBe(created.id);
+    expect(third.id).toBe(created.id);
   });
 
   it('remembers the abbreviation when a price is approved', async () => {
