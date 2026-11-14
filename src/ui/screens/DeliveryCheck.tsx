@@ -95,7 +95,12 @@ export function DeliveryCheck(props: {
           angle for anything piled deep - I can only count what the camera can see.
         </p>
 
-        <PhotoPicker onPick={(files) => void add(files)} disabled={busy} cameraLabel="Photo of the stack" />
+        <PhotoPicker
+          onPick={(files) => void add(files)}
+          disabled={busy}
+          captureLabel="Photograph a stack"
+          captureHint="one picture per product"
+        />
         <PhotoGrid
           photos={photos}
           onRemove={busy ? undefined : (id) => void repo.deletePhoto(id).then(reload)}
@@ -105,7 +110,7 @@ export function DeliveryCheck(props: {
 
         <button
           type="button"
-          className="primary"
+          className="btn btn-primary btn-block"
           disabled={busy || photos.length === 0}
           onClick={() => void run()}
         >
@@ -124,15 +129,15 @@ export function DeliveryCheck(props: {
         {lines !== null && (
           <div className="list">
             {lines.map((line, index) => (
-              <div className="card" key={`${line.itemId ?? 'extra'}-${index}`}>
+              <div className="card card-pad stack" key={`${line.itemId ?? 'extra'}-${index}`}>
                 <div className="row">
-                  <span className="grow title">
+                  <span className="grow t-title">
                     {line.name}
                     {line.size !== null ? ` ${line.size}` : ''}
                   </span>
-                  <span className={`tag ${tone(line.status)}`}>{label(line.status)}</span>
+                  <span className={`chip ${tone(line.status)}`}>{label(line.status)}</span>
                 </div>
-                <p className="muted">{line.message}</p>
+                <p className="t-sub">{line.message}</p>
               </div>
             ))}
           </div>
@@ -163,6 +168,6 @@ function label(status: StoredDeliveryLine['status']): string {
 
 function tone(status: StoredDeliveryLine['status']): string {
   if (status === DeliveryStatus.CONFIRMED) return '';
-  if (status === DeliveryStatus.LIKELY_MISSING) return 'bad';
-  return 'warn';
+  if (status === DeliveryStatus.LIKELY_MISSING) return 'chip-bad';
+  return 'chip-warn';
 }

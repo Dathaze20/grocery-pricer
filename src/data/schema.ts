@@ -17,7 +17,7 @@ import type { PricingSource } from '../core/pricing';
  */
 
 export const DB_NAME = 'grocery-pricer';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 export const OrderStatus = {
   /** Photos added, nothing sent anywhere yet. */
@@ -113,7 +113,18 @@ export interface StoredProduct {
   normalizedName: string;
   displayName: string;
   size: string | null;
+  /** Flavour, scent or colour. Two variants of one product are two products. */
+  variant: string | null;
   upc: string | null;
+  /** The supplier's own item number, when the receipt prints one. */
+  supplierSku: string | null;
+  /**
+   * Receipt abbreviations this product has been seen under, normalised.
+   *
+   * This is how the app stops needing the model to decode `HELLM MAYONNAISE 8Z` twice. It is
+   * local memory of one shop's receipts, not anything sent back to Google.
+   */
+  aliases: string[];
   category: Category;
   lastCost: number | null;
   lastRetailPrice: number | null;

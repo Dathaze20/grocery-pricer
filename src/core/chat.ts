@@ -343,13 +343,31 @@ export function effectiveRetail(answer: PriceAnswer): Money | null {
   return answer.approvedRetail ?? answer.suggestedRetail;
 }
 
+/**
+ * `$6.50 each → $11.99`, and `(suggested)` when nobody has approved that price.
+ *
+ * The word "each" is load-bearing: the left number is what one item cost, not what the case
+ * cost, and someone holding a case needs that distinction without having to ask for it.
+ */
 function priceLine(answer: PriceAnswer): string {
   const cost = answer.unitCost;
   const retail = effectiveRetail(answer);
-  if (cost !== null && retail !== null) return cost.format() + ARROW + retail.format();
-  if (cost !== null) return `${cost.format()}${ARROW}no price set yet`;
-  if (retail !== null) return `cost unknown${ARROW}${retail.format()}`;
+  const mark = answer.approvedRetail === null || answer.approvedRetail === undefined ? ' (suggested)' : '';
+  if (cost !== null && retail !== null) {
+    return `${cost.format()} each${ARROW}${retail.format()}${mark}`;
+  }
+  if (cost !== null) return `${cost.format()} each${ARROW}no price set yet`;
+  // No cost means no cost. Nothing here invents one from the shelf price.
+  if (retail !== null) return `cost not read${ARROW}${retail.format()}${mark}`;
   return 'I could not read the cost for this one.';
+}
+
+/** Lines after the first in a numbered answer line up under the product name, not the number. */
+function indent(text: string): string {
+  return text
+    .split('\n')
+    .map((line, index) => (index === 0 ? line : `   ${line}`))
+    .join('\n');
 }
 
 /**
@@ -374,13 +392,13 @@ export const ChatAnswerFormatter = {
     if (answers.length === 1) return ChatAnswerFormatter.single(answers[0]!);
     return answers
       .map((answer, index) => {
-        let text = `${index + 1}. ${answerTitle(answer)}\n${priceLine(answer)}`;
+        let text = `${answerTitle(answer)}\n${priceLine(answer)}`;
         if (answer.note !== null && answer.note !== undefined && answer.note.trim().length > 0) {
           text += `\n${answer.note}`;
         }
-        return text;
+        return `${index + 1}. ${indent(text)}`;
       })
-      .join('\n\n');
+      .join('\n');
   },
 
   /** `Carnation Evaporated Milk 12 oz` / `8 cans per case.` */

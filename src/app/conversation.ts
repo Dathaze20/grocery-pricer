@@ -253,6 +253,14 @@ async function applyResolution(
   }
 }
 
+/**
+ * Photograph to price.
+ *
+ * The shopkeeper photographs what they are unpacking and asks what it is worth. Gemini says
+ * what the picture shows; every figure in the reply comes from the receipt this shop already
+ * processed. A product the camera sees but the receipt does not know is reported as not found -
+ * there is no cost to quote, and inventing one would be worse than saying so.
+ */
 async function identifyFromPhoto(
   provider: AiProvider,
   engine: OrderQueryEngine,
@@ -274,29 +282,52 @@ async function identifyFromPhoto(
 
   const answers: PriceAnswer[] = [];
   const ids: number[] = [];
+  const missing: string[] = [];
+
   for (const product of found) {
-    const outcome = engine.resolve({ phrase: visualSearchText(product) });
-    const item = outcome.kind === 'exact' ? outcome.item : outcome.kind === 'several' ? outcome.items[0] : null;
-    if (item === null || item === undefined) continue;
+    const phrase = visualSearchText(product);
+    const outcome = engine.resolve({ phrase });
+    // Only a confident match quotes a price. "Several" or "ambiguous" means the picture could
+    // be any of them, and the costs differ, so it is reported as unmatched rather than guessed.
+    const item = outcome.kind === 'exact' ? outcome.item : null;
+    if (item === null) {
+      if (phrase.length > 0) missing.push(phrase);
+      continue;
+    }
+    // Three cases of one product in one picture is one answer, not three identical ones.
+    if (ids.includes(item.id)) continue;
     answers.push(toAnswer(item));
     ids.push(item.id);
   }
 
   if (answers.length === 0) {
-    const names = found.map((p) => visualSearchText(p)).filter((n) => n.length > 0);
     return {
       text:
-        names.length > 0
-          ? `That looks like ${names[0]}, but it is not in this order.`
+        missing.length > 0
+          ? `That looks like ${missing[0]}, but it is not in this order.`
           : 'That is not in this order.',
       itemIds: [],
       usedAi: true,
     };
   }
 
-  const note = text.length > 0 && /profit|margin|make/.test(text.toLowerCase()) ? profitNote(answers[0]!) : null;
-  const body = ChatAnswerFormatter.numbered(answers);
-  return { text: note === null ? body : `${body}\n${note}`, itemIds: ids, usedAi: true };
+  const lines = [ChatAnswerFormatter.numbered(answers)];
+
+  if (missing.length > 0) {
+    lines.push(
+      missing.length === 1
+        ? `I could not match ${missing[0]} to this order.`
+        : `I could not match ${missing.length} of the products in that photo to this order.`,
+    );
+  }
+
+  // Profit stays out of the way unless it was asked for: the everyday question is two numbers.
+  if (/profit|margin|make|earn/.test(text.toLowerCase())) {
+    const note = profitNote(answers[0]!);
+    if (note !== null) lines.push(note);
+  }
+
+  return { text: lines.join('\n'), itemIds: ids, usedAi: true };
 }
 
 function profitNote(answer: PriceAnswer): string | null {

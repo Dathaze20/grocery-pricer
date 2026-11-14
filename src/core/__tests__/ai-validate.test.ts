@@ -204,6 +204,44 @@ describe('mergeExtractions - the same receipt photographed twice', () => {
     expect(merged.items).toHaveLength(2);
   });
 
+  it('keeps repeated lines from one photograph as separate cases', () => {
+    // A wholesale receipt prints one line per case, so three of something is three identical
+    // lines, each with its own flyer discount. Folding them together would drop two cases and
+    // the money paid for them.
+    const merged = mergeExtractions([
+      extraction([
+        item({ rawName: 'FRESH STEP LITTER 7#', size: '7 LB', casePrice: '19.49', sourcePhotoIds: [1] }),
+        item({ rawName: 'FRESH STEP LITTER 7#', size: '7 LB', casePrice: '19.49', sourcePhotoIds: [1] }),
+        item({ rawName: 'FRESH STEP LITTER 7#', size: '7 LB', casePrice: '19.49', sourcePhotoIds: [1] }),
+      ]),
+      extraction([item({ rawName: 'CORN OIL 48Z', size: '48 OZ', casePrice: '30.00', sourcePhotoIds: [2] })]),
+    ]);
+
+    expect(merged.items.filter((i) => i.rawName === 'FRESH STEP LITTER 7#')).toHaveLength(3);
+  });
+
+  it('keeps repeated barcoded lines from one photograph apart too', () => {
+    const merged = mergeExtractions([
+      extraction([
+        item({ upc: '044600020013', casePrice: '19.49', sourcePhotoIds: [1] }),
+        item({ upc: '044600020013', casePrice: '19.49', sourcePhotoIds: [1] }),
+      ]),
+      extraction([item({ rawName: 'CORN OIL', size: '48 OZ', casePrice: '30.00', sourcePhotoIds: [2] })]),
+    ]);
+
+    expect(merged.items.filter((i) => i.upc === '044600020013')).toHaveLength(2);
+  });
+
+  it('still folds one line seen in two overlapping photographs into one', () => {
+    const merged = mergeExtractions([
+      extraction([item({ rawName: 'FRESH STEP LITTER 7#', size: '7 LB', casePrice: '19.49', sourcePhotoIds: [1] })]),
+      extraction([item({ rawName: 'FRESH STEP LITTER 7#', size: '7 LB', casePrice: '19.49', sourcePhotoIds: [2] })]),
+    ]);
+
+    expect(merged.items).toHaveLength(1);
+    expect(merged.items[0]!.sourcePhotoIds).toEqual([1, 2]);
+  });
+
   it('keeps the same product bought at two different prices apart', () => {
     // Two lines on one receipt at different prices are two purchases, not a misread.
     const merged = mergeExtractions([

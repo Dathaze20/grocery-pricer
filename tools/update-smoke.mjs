@@ -168,7 +168,7 @@ try {
   check('the installed version is running', (await page.title()) !== V2_TITLE);
 
   // Something worth not losing: this is what a reload at the wrong moment would cost.
-  await page.click('text=Settings');
+  await page.click('button[aria-label="Settings"]');
   await page.fill('#key', 'AIzaStoredBeforeTheUpdate');
   await page.click('button:has-text("Save")');
   await page.waitForTimeout(300);
@@ -206,7 +206,7 @@ try {
   check('the new version is in charge', await page.locator('text=NEW ORDER').isVisible());
 
   // --- nothing was lost, and nothing keeps happening -----------------------
-  await page.click('text=Settings');
+  await page.click('button[aria-label="Settings"]');
   check(
     'the stored key survived the update',
     (await page.inputValue('#key').catch(() => '')) === 'AIzaStoredBeforeTheUpdate' ||
@@ -279,7 +279,7 @@ try {
   await work_.waitForFunction(() => navigator.serviceWorker?.controller != null, null, { timeout: 30000 });
   const installedTitle = await work_.title();
 
-  await work_.click('text=Settings');
+  await work_.click('button[aria-label="Settings"]');
   await work_.fill('#key', 'AIzaKeyForTheInterruptedRun');
   await work_.click('button:has-text("Save")');
   await work_.waitForTimeout(300);

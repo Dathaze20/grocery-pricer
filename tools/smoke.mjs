@@ -75,6 +75,19 @@ async function main() {
       const post = route.request().postDataJSON();
       const prompt = JSON.stringify(post?.contents ?? '');
 
+      if (prompt.includes('\\"products\\"') || prompt.includes('Identify every distinct product')) {
+        served.push('identification');
+        await route.fulfill(
+          geminiReply({
+            products: [
+              { brand: 'HELLMANNS', productName: 'Mayonnaise', size: '8 OZ', variant: null, upc: null, position: 0, confidence: 0.93 },
+            ],
+            warnings: [],
+          }),
+        );
+        return;
+      }
+
       if (prompt.includes('"images"') || prompt.includes('RECEIPT:')) {
         served.push('classification');
         await route.fulfill(
@@ -117,14 +130,14 @@ async function main() {
     check('the app loads', await page.locator('text=NEW ORDER').isVisible());
     // Waited for rather than read once: the prompt appears when the stored key has actually
     // been looked up, so asserting it immediately would pass before anything was checked.
-    await page.waitForSelector('text=/add your free Gemini key/i', { timeout: 10000 });
+    await page.waitForSelector('text=/add your Gemini API key/i', { timeout: 10000 });
     check('it asks for a key before the first order', true);
 
     // --- settings ---------------------------------------------------------
     // Typed the instant the screen appears, on purpose. Settings loads the stored key from
     // IndexedDB asynchronously, and on a slow device that read lands after the user has pasted
     // their key: it must not overwrite what they typed, and Save must not then store the blank.
-    await page.click('text=Settings');
+    await page.click('button[aria-label="Settings"]');
     await page.fill('#key', 'AIza-test-key');
     await page.click('button:has-text("Save")');
     await page.waitForTimeout(200);
@@ -142,7 +155,7 @@ async function main() {
     );
 
     await page.click('button:has-text("Back")');
-    await page.click('text=Settings');
+    await page.click('button[aria-label="Settings"]');
     check(
       'the key is still there when settings is reopened',
       await holdsValue(page, '#key', 'AIza-test-key'),
@@ -155,7 +168,7 @@ async function main() {
     await page.click('button:has-text("Save")');
     await page.waitForTimeout(200);
     await page.click('button:has-text("Back")');
-    await page.click('text=Settings');
+    await page.click('button[aria-label="Settings"]');
     check(
       'saving an empty box does not throw the key away',
       await holdsValue(page, '#key', 'AIza-test-key'),
@@ -166,7 +179,7 @@ async function main() {
     await page.waitForTimeout(300);
     check(
       'the setup prompt goes away once a key is stored',
-      (await page.locator('text=/add your free Gemini key/i').count()) === 0,
+      (await page.locator('text=/add your Gemini API key/i').count()) === 0,
     );
 
     // --- an order ---------------------------------------------------------
@@ -195,8 +208,8 @@ async function main() {
     check('a photographed receipt appears', (await page.locator('.photo').count()) === 1);
 
     await page.click('button[aria-label="Process order"]');
-    await waitOrExplain(page, '.bubble.app', { served, errors });
-    const opening = await page.locator('.bubble.app').first().innerText();
+    await waitOrExplain(page, '.bubble.reply', { served, errors });
+    const opening = await page.locator('.bubble.reply').first().innerText();
     check('the order is summarised', opening.includes('1 product'), opening);
     check('the total is the app\'s own arithmetic', opening.includes('$24.00'), opening);
     check('gemini was actually called', calls.length > 0);
@@ -208,7 +221,7 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll('.bubble').length >= 3, null, {
       timeout: 20000,
     });
-    const answer = await page.locator('.bubble.app').last().innerText();
+    const answer = await page.locator('.bubble.reply').last().innerText();
     // $24.00 for 12 is $2.00 each, which is the $2.00-$2.99 rung: $4.99.
     check('the answer is priced from the local engine', answer.includes('$4.99'), answer);
     check('the answer names the product', answer.toLowerCase().includes('mayonnaise'), answer);
@@ -217,6 +230,144 @@ async function main() {
       calls.length === callsBeforeQuestion,
       `${calls.length - callsBeforeQuestion} extra call(s)`,
     );
+
+    // --- photograph to price ------------------------------------------------
+    // The receipt is processed. Now somebody photographs what they are unpacking and asks.
+    await page.click('button[aria-label="Attach a photo"]');
+    // The inputs are deliberately hidden - the camera is opened by the visible button - so the
+    // file is handed to the element itself rather than clicked into it.
+    await page.waitForTimeout(300);
+    await page.locator('.composer input[type=file]:not([multiple])').setInputFiles({
+      name: 'product.jpg',
+      mimeType: 'image/jpeg',
+      buffer: JPEG,
+    });
+    await page.waitForFunction(() => document.querySelectorAll('.bubble').length >= 5, null, {
+      timeout: 20000,
+    });
+    const photoAnswer = await page.locator('.bubble.reply').last().innerText();
+    check(
+      'a photographed product is priced from the receipt',
+      photoAnswer.includes('$2.00 each → $4.99 (suggested)'),
+      photoAnswer,
+    );
+    check(
+      'and the answer stays short',
+      !/margin|markup|%/i.test(photoAnswer) && photoAnswer.split('\n').length <= 3,
+      photoAnswer,
+    );
+
+    // --- profit per case ---------------------------------------------------
+    // $24.00 for 12 was read from the (faked) receipt, so each is $2.00 and the suggested
+    // $4.99 earns 12 x $4.99 - $24.00 = $35.88 on the case.
+    await page.click('button[aria-label="The order"]');
+    await page.waitForSelector('.pc-value');
+    check(
+      'the case profit is shown on the product',
+      (await page.locator('.pc-value').first().innerText()).trim() === '$35.88',
+      await page.locator('.pc-value').first().innerText(),
+    );
+
+    const priceBox = page.locator('input[aria-label^="Selling price"]').first();
+    check('the suggested price is offered', (await priceBox.inputValue()) === '4.99');
+
+    // + asks the case for a dollar more. A case of twelve moves in twelve-cent steps, so the
+    // price rounds up and the case earns a little over the dollar - and says so.
+    await page.locator('button[aria-label^="Raise profit per case"]').first().click();
+    check(
+      'plus raises the target by a dollar',
+      (await page.locator('.pc-value').first().innerText()).trim() === '$36.96',
+      await page.locator('.pc-value').first().innerText(),
+    );
+    check('and moves the shelf price with it', (await priceBox.inputValue()) === '5.08');
+    check(
+      'and says what the target really earns',
+      await page.locator('text=/You asked for \\$36.88 a case/').isVisible(),
+    );
+
+    // Stepping the target rather than the result means + then - comes back to where it started
+    // instead of drifting up a few cents each press.
+    await page.locator('button[aria-label^="Lower profit per case"]').first().click();
+    check(
+      'minus returns exactly where it began',
+      (await page.locator('.pc-value').first().innerText()).trim() === '$35.88',
+      await page.locator('.pc-value').first().innerText(),
+    );
+    check('with the original price back', (await priceBox.inputValue()) === '4.99');
+
+    // Typed by hand, to the cent.
+    await priceBox.fill('6.25');
+    check(
+      'typing a price recalculates the case profit at once',
+      (await page.locator('.pc-value').first().innerText()).trim() === '$51.00',
+      await page.locator('.pc-value').first().innerText(),
+    );
+
+    // A price under cost has to say so rather than show a quiet negative.
+    await priceBox.fill('1.50');
+    check('a below-cost price is called out', await page.locator('text=/Below cost/i').isVisible());
+
+    // The stale-draft bug: type a new price, then clear the box. Nothing is on screen to save,
+    // so Save must not be offered - it used to still be holding the number that was wiped.
+    await priceBox.fill('6.25');
+    await priceBox.fill('');
+    check(
+      'an emptied price box offers nothing to save',
+      (await page.locator('button[aria-label^="Save the price"]').count()) === 0,
+    );
+    check(
+      'and says so instead of showing a price it would save',
+      await page.locator('text=/Type a price, or press Cancel/').isVisible(),
+    );
+    check(
+      'and the case profit goes blank with it',
+      (await page.locator('.pc-value').first().innerText()).trim() === '—',
+      await page.locator('.pc-value').first().innerText(),
+    );
+
+    // Half-typed is the same promise.
+    await priceBox.fill('6.2.5');
+    check(
+      'a half-typed price offers nothing to save either',
+      (await page.locator('button[aria-label^="Save the price"]').count()) === 0,
+    );
+
+    // A typed debt is refused, not quietly clamped to zero - that used to save a free product.
+    await priceBox.fill('-3.00');
+    check(
+      'a negative price offers nothing to save',
+      (await page.locator('button[aria-label^="Save the price"]').count()) === 0,
+    );
+    check(
+      'and says a price cannot be negative',
+      await page.locator('text=/A price cannot be negative/').isVisible(),
+    );
+
+    // Finer than a cent is refused rather than rounded behind the owner's back.
+    await priceBox.fill('6.2549');
+    check(
+      'an amount finer than a cent offers nothing to save',
+      (await page.locator('button[aria-label^="Save the price"]').count()) === 0,
+    );
+    check(
+      'and says prices go to the cent',
+      await page.locator('text=/two decimal places at most/').isVisible(),
+    );
+
+    await page.locator('button:has-text("Cancel")').first().click();
+    check('cancel puts the suggestion back', (await priceBox.inputValue()) === '4.99');
+
+    await priceBox.fill('6.25');
+    await page.locator('button[aria-label^="Save the price"]').first().click();
+    await page.waitForTimeout(700);
+    check(
+      'the saved price is the owner\'s, not a suggestion',
+      (await page.locator('text=Your price').count()) > 0,
+      'labels on screen: ' + (await page.locator('.row-button .t-cap').allInnerTexts()).join(' | '),
+    );
+
+    await page.click('button:has-text("Back")');
+    await page.waitForTimeout(300);
 
     // --- the order survives a reload -------------------------------------
     await page.reload({ waitUntil: 'networkidle' });

@@ -7,12 +7,17 @@ import { CameraIcon, GalleryIcon } from './icons';
  * `capture="environment"` opens the back camera directly - which is what someone standing over a
  * receipt wants - but it also removes any way to pick an existing picture. Keeping a plain file
  * input beside it means a photo taken earlier, or one sent by the supplier, still works.
+ *
+ * The camera is the large target and the gallery is a quiet second: photographing the receipt in
+ * front of you is what happens almost every time.
  */
 export function PhotoPicker(props: {
   onPick: (files: File[]) => void;
-  cameraLabel?: string;
+  captureLabel?: string;
+  captureHint?: string;
   galleryLabel?: string;
   disabled?: boolean;
+  compact?: boolean;
 }): JSX.Element {
   const camera = useRef<HTMLInputElement>(null);
   const gallery = useRef<HTMLInputElement>(null);
@@ -24,8 +29,8 @@ export function PhotoPicker(props: {
     if (files.length > 0) props.onPick(files);
   }
 
-  return (
-    <div className="row">
+  const inputs = (
+    <>
       <input
         ref={camera}
         className="hidden-input"
@@ -34,31 +39,57 @@ export function PhotoPicker(props: {
         capture="environment"
         onChange={handle}
       />
-      <input
-        ref={gallery}
-        className="hidden-input"
-        type="file"
-        accept="image/*"
-        multiple
-        onChange={handle}
-      />
+      <input ref={gallery} className="hidden-input" type="file" accept="image/*" multiple onChange={handle} />
+    </>
+  );
+
+  if (props.compact === true) {
+    return (
+      <div className="row">
+        {inputs}
+        <button
+          type="button"
+          className="btn btn-secondary grow"
+          disabled={props.disabled === true}
+          onClick={() => camera.current?.click()}
+        >
+          <CameraIcon size={20} />
+          {props.captureLabel ?? 'Camera'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary grow"
+          disabled={props.disabled === true}
+          onClick={() => gallery.current?.click()}
+        >
+          <GalleryIcon size={20} />
+          {props.galleryLabel ?? 'Gallery'}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="stack">
+      {inputs}
       <button
         type="button"
-        className="secondary"
+        className="capture"
         disabled={props.disabled === true}
         onClick={() => camera.current?.click()}
       >
-        <CameraIcon />
-        {props.cameraLabel ?? 'Take a photo'}
+        <CameraIcon size={32} />
+        {props.captureLabel ?? 'Take a photo'}
+        {props.captureHint !== undefined && <span className="t-cap">{props.captureHint}</span>}
       </button>
       <button
         type="button"
-        className="secondary"
+        className="btn btn-quiet btn-block"
         disabled={props.disabled === true}
         onClick={() => gallery.current?.click()}
       >
-        <GalleryIcon />
-        {props.galleryLabel ?? 'Choose'}
+        <GalleryIcon size={18} />
+        {props.galleryLabel ?? 'Choose from gallery'}
       </button>
     </div>
   );

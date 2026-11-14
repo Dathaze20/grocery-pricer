@@ -31,7 +31,7 @@ export interface GroceryDb extends DBSchema {
   products: {
     key: number;
     value: StoredProduct;
-    indexes: { normalizedName: string; upc: string };
+    indexes: { normalizedName: string; upc: string; supplierSku: string };
   };
   priceHistory: {
     key: number;
@@ -68,7 +68,7 @@ export function openGroceryDb(name: string = DB_NAME): Promise<IDBPDatabase<Groc
   if (name === DB_NAME && handle !== null) return handle;
 
   const opened = openDB<GroceryDb>(name, DB_VERSION, {
-    upgrade(db, oldVersion) {
+    upgrade(db, oldVersion, _newVersion, transaction) {
       if (oldVersion < 1) {
         const orders = db.createObjectStore('orders', { keyPath: 'id', autoIncrement: true });
         orders.createIndex('createdAt', 'createdAt');
@@ -96,6 +96,15 @@ export function openGroceryDb(name: string = DB_NAME): Promise<IDBPDatabase<Groc
         deliveries.createIndex('orderId', 'orderId');
 
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+
+      // Additive only. Existing products simply have no supplier number yet, and a row with no
+      // value for an index key is left out of that index rather than altered.
+      if (oldVersion < 2) {
+        const products = transaction.objectStore('products');
+        if (!products.indexNames.contains('supplierSku')) {
+          products.createIndex('supplierSku', 'supplierSku');
+        }
       }
     },
   });

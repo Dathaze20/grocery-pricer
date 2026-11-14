@@ -19,10 +19,8 @@ export function NewOrder(props: {
   const { repo, orderId, go } = props;
   const [photos, setPhotos] = useState<StoredPhoto[]>([]);
   const [busy, setBusy] = useState(false);
-
   const [step, setStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
 
   const reload = useCallback(async () => {
     setPhotos(await repo.photosFor(orderId, false));
@@ -82,58 +80,75 @@ export function NewOrder(props: {
     }
   }, [repo, orderId, go]);
 
+  const cancel = useCallback(() => {
+    void repo.order(orderId).then(async (order) => {
+      // An untouched draft is not worth keeping in the list.
+      if (order !== null && order.status === OrderStatus.DRAFT && photos.length === 0) {
+        await repo.deleteOrder(orderId);
+      }
+      go({ kind: 'home' });
+    });
+  }, [repo, orderId, photos.length, go]);
+
+  const count = photos.length;
+
   return (
     <div className="app">
       <TopBar title="New order" go={go} back={{ kind: 'home' }} />
       <main>
-        <p className="muted">
-          Photograph the whole receipt. Several photos are fine - overlap them rather than leaving
-          a gap, and I will work out which lines are the same.
-        </p>
-
-        <PhotoPicker onPick={(files) => void add(files)} disabled={busy} />
-
-        <PhotoGrid photos={photos} onRemove={busy ? undefined : (id) => void remove(id)} />
+        {count === 0 ? (
+          <div className="fill-center">
+            <p className="muted">
+              Photograph the whole receipt. Several photos are fine — overlap them rather than
+              leaving a gap, and I will work out which lines are the same.
+            </p>
+            <PhotoPicker
+              onPick={(files) => void add(files)}
+              disabled={busy}
+              captureLabel="Take a photo"
+              captureHint="of the receipt"
+            />
+          </div>
+        ) : (
+          <>
+            <div className="row">
+              <h2 className="t-section grow" style={{ marginTop: 0 }}>
+                {count} {count === 1 ? 'photo' : 'photos'}
+              </h2>
+            </div>
+            <PhotoGrid photos={photos} onRemove={busy ? undefined : (id) => void remove(id)} />
+            <PhotoPicker
+              compact
+              onPick={(files) => void add(files)}
+              disabled={busy}
+              captureLabel="Add photo"
+            />
+          </>
+        )}
 
         {error !== null && <p className="notice bad">{error}</p>}
 
-        <button
-          type="button"
-          className="primary huge"
-          aria-label="Process order"
-          disabled={busy || photos.length === 0}
-          onClick={() => void process()}
-        >
-          {busy ? (
-            <>
-              <span className="spinner" aria-hidden="true" />
-              {step ?? 'Working'}…
-            </>
-          ) : photos.length === 0 ? (
-            // A greyed-out button with the hint somewhere else reads as broken. Say what is
-            // missing on the button itself.
-            'Take a photo of the receipt first'
-          ) : (
-            `PROCESS ORDER (${photos.length} ${photos.length === 1 ? 'photo' : 'photos'})`
-          )}
-        </button>
-
-        <button
-          type="button"
-          className="secondary quiet"
-          disabled={busy}
-          onClick={() => {
-            void repo.order(orderId).then(async (order) => {
-              // An untouched draft is not worth keeping in the list.
-              if (order !== null && order.status === OrderStatus.DRAFT && photos.length === 0) {
-                await repo.deleteOrder(orderId);
-              }
-              go({ kind: 'home' });
-            });
-          }}
-        >
-          Cancel
-        </button>
+        <div className="actionbar">
+          <button
+            type="button"
+            className="btn btn-primary btn-block"
+            aria-label="Process order"
+            disabled={busy || count === 0}
+            onClick={() => void process()}
+          >
+            {busy ? (
+              <>
+                <span className="spinner" aria-hidden="true" />
+                {step ?? 'Working'}…
+              </>
+            ) : (
+              'PROCESS ORDER'
+            )}
+          </button>
+          <button type="button" className="btn btn-quiet btn-block" disabled={busy} onClick={cancel}>
+            Cancel
+          </button>
+        </div>
       </main>
     </div>
   );

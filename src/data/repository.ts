@@ -1,6 +1,6 @@
 import type { IDBPDatabase } from 'idb';
 import { Money } from '../core/money';
-import { NameNormalizer } from '../core/matching';
+import { NameNormalizer, normalizeUpc, upcEquivalent } from '../core/matching';
 import { Category, guessCategory } from '../core/models';
 import { openGroceryDb, type GroceryDb } from './db';
 import {
@@ -205,6 +205,9 @@ export class Repository {
 
     const updated = await this.updateItem(itemId, { approvedPrice: price.toStorage() });
     if (item.productId !== null) {
+      // Approving a price is the shop confirming this row is this product, which makes the
+      // receipt's abbreviation worth remembering.
+      await this.rememberAlias(item.productId, item.rawName);
       await this.recordPrice(item.productId, item.orderId, item.trueUnitCost, price.toStorage());
       const product = await this.db.get('products', item.productId);
       if (product !== undefined) {
@@ -219,26 +222,59 @@ export class Repository {
   /**
    * Finds the product a receipt line refers to, or creates it.
    *
-   * A barcode is definitive when there is one. Otherwise a product is the same product when its
-   * normalised name and its size both agree - name alone would merge Tide 25 oz into Tide 40 oz,
-   * and then quote the wrong cost for both.
+   * The order of attempts is the order of how much each thing proves:
+   *
+   *   1. the barcode - definitive when the receipt prints a legible one
+   *   2. the supplier's own item number - definitive within one supplier
+   *   3. a receipt abbreviation this shop has already confirmed
+   *   4. the normalised name, with the size and variant agreeing exactly
+   *
+   * There is no fuzzy step here on purpose. Names alone merge Tide 25 oz into Tide 40 oz, and
+   * a lemon cleaner into a lavender one, and the shop then gets quoted the wrong cost for both.
+   * A close-but-not-certain name is left as its own product until somebody confirms otherwise.
    */
   async findOrCreateProduct(input: {
     displayName: string;
     size: string | null;
     upc: string | null;
+    variant?: string | null;
+    supplierSku?: string | null;
+    receiptName?: string | null;
     category?: Category;
   }): Promise<StoredProduct> {
     const normalized = NameNormalizer.normalize(input.displayName);
-    const upc = input.upc?.trim() ?? '';
+    const alias = NameNormalizer.normalize(input.receiptName ?? '');
+    const upc = normalizeUpc(input.upc) ?? '';
+    const sku = input.supplierSku?.trim() ?? '';
+    const variant = input.variant?.trim() ?? null;
 
+    // An abbreviation is only recorded against a product when something else proved the match:
+    // a barcode or the supplier's own item number. A name a model expanded is a guess, and a
+    // guess written into memory is a guess the app will trust forever afterwards.
     if (upc.length > 0) {
-      const byUpc = await this.db.getFromIndex('products', 'upc', upc);
-      if (byUpc !== undefined) return this.touchProduct(byUpc);
+      const byUpc = await this.findByBarcode(upc, input.upc ?? null);
+      if (byUpc !== undefined) return this.touchProduct(byUpc, alias);
+    }
+
+    if (sku.length > 0) {
+      const bySku = await this.db.getFromIndex('products', 'supplierSku', sku);
+      if (bySku !== undefined) return this.touchProduct(bySku, alias);
+    }
+
+    if (alias.length > 0) {
+      const all = await this.db.getAll('products');
+      // Products saved before aliases existed have no such field; reading it as a list would
+      // throw and take the whole lookup with it.
+      const byAlias = all.find((product) => (product.aliases ?? []).includes(alias));
+      if (byAlias !== undefined) return this.touchProduct(byAlias, alias);
     }
 
     const candidates = await this.db.getAllFromIndex('products', 'normalizedName', normalized);
-    const match = candidates.find((c) => (c.size ?? null) === (input.size ?? null));
+    const match = candidates.find(
+      (c) => (c.size ?? null) === (input.size ?? null) && (c.variant ?? null) === variant,
+    );
+    // Matched on the name alone, which is not proof of identity, so the abbreviation is not
+    // learned here. Approving a price is what confirms it.
     if (match !== undefined) return this.touchProduct(match);
 
     const now = Date.now();
@@ -246,7 +282,11 @@ export class Repository {
       normalizedName: normalized,
       displayName: input.displayName,
       size: input.size,
+      variant,
       upc: upc.length > 0 ? upc : null,
+      supplierSku: sku.length > 0 ? sku : null,
+      // A brand-new product has confirmed nothing yet.
+      aliases: [],
       category: input.category ?? guessCategory(input.displayName),
       lastCost: null,
       lastRetailPrice: null,
@@ -258,8 +298,47 @@ export class Repository {
     return { ...created, id };
   }
 
-  private async touchProduct(product: StoredProduct): Promise<StoredProduct> {
-    const updated = { ...product, timesSeen: product.timesSeen + 1, lastSeenAt: Date.now() };
+  /**
+   * Finds a product by barcode, whichever way the digits were written down.
+   *
+   * The same product is printed as 12 digits on one receipt and 13 on another, differing only
+   * by leading zeros, and rows saved by older versions kept whatever the receipt showed. The
+   * index is tried first because it is fast; the scan behind it is what makes the two spellings
+   * one product rather than two.
+   */
+  private async findByBarcode(
+    normalized: string,
+    raw: string | null,
+  ): Promise<StoredProduct | undefined> {
+    const indexed = await this.db.getFromIndex('products', 'upc', normalized);
+    if (indexed !== undefined) return indexed;
+    if (raw !== null && raw.trim() !== normalized) {
+      const asPrinted = await this.db.getFromIndex('products', 'upc', raw.trim());
+      if (asPrinted !== undefined) return asPrinted;
+    }
+    const all = await this.db.getAll('products');
+    return all.find((product) => upcEquivalent(product.upc, normalized));
+  }
+
+  /** Records a receipt abbreviation against a product the shop has confirmed it belongs to. */
+  async rememberAlias(productId: number, receiptName: string | null): Promise<void> {
+    const alias = NameNormalizer.normalize(receiptName ?? '');
+    if (alias.length === 0) return;
+    const product = await this.db.get('products', productId);
+    if (product === undefined || product.aliases.includes(alias)) return;
+    await this.db.put('products', { ...product, aliases: [...product.aliases, alias] });
+  }
+
+  private async touchProduct(product: StoredProduct, alias = ''): Promise<StoredProduct> {
+    // Products stored before aliases existed have none; treat that as an empty list rather
+    // than letting it read as missing.
+    const aliases = product.aliases ?? [];
+    const updated = {
+      ...product,
+      aliases: alias.length > 0 && !aliases.includes(alias) ? [...aliases, alias] : aliases,
+      timesSeen: product.timesSeen + 1,
+      lastSeenAt: Date.now(),
+    };
     await this.db.put('products', updated);
     return updated;
   }
@@ -295,10 +374,15 @@ export class Repository {
     return { ...row, id };
   }
 
-  /** Newest first, so "what did this cost last time" is the first row. */
+  /**
+   * Newest first, so "what did this cost last time" is the first row.
+   *
+   * Two rows written in the same millisecond tie on time, which is not rare when an order is
+   * processed in one go. The id breaks the tie, because it always increases.
+   */
   async historyFor(productId: number): Promise<StoredPriceHistory[]> {
     const rows = await this.db.getAllFromIndex('priceHistory', 'productId', productId);
-    return rows.sort((a, b) => b.recordedAt - a.recordedAt);
+    return rows.sort((a, b) => b.recordedAt - a.recordedAt || b.id - a.id);
   }
 
   // --- conversation ---------------------------------------------------------
