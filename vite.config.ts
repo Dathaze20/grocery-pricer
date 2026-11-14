@@ -12,7 +12,14 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt', not 'autoUpdate'. autoUpdate makes the new worker seize control the moment it
+      // installs, which means a reload can land in the middle of a receipt being processed. The
+      // app registers the worker itself in src/ui/pwa.ts and decides when it is safe to hand
+      // over - see src/ui/updates.ts.
+      registerType: 'prompt',
+      // The app imports virtual:pwa-register itself; injecting a second registration script
+      // would register the worker twice.
+      injectRegister: null,
       includeAssets: ['icon-192.png', 'icon-512.png', 'apple-touch-icon.png'],
       manifest: {
         name: 'Grocery Pricer',
@@ -34,6 +41,12 @@ export default defineConfig({
         // The app shell is cached so a saved order opens with no connection at all. Calls to
         // Gemini are deliberately never cached - a stale answer about money is worse than none.
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // Take charge of the page as soon as the first install finishes, so the app works
+        // offline from the first visit rather than the second.
+        clientsClaim: true,
+        // But never seize control from a page that is already running: a new worker waits until
+        // the app says the moment is safe. That handover is src/ui/updates.ts.
+        skipWaiting: false,
         navigateFallback: `${base}index.html`,
         runtimeCaching: [
           {

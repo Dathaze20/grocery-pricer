@@ -45,6 +45,12 @@ jobs:
       - name: Browser smoke test
         run: npm run test:browser
 
+      # Builds two real versions and serves the second over the first, so the service worker
+      # update lifecycle is exercised the way a deployment exercises it. An installed app that
+      # cannot update itself is one its owner has to reinstall by hand.
+      - name: Update lifecycle test
+        run: npm run test:update
+
       # A key in the bundle would be a key handed to everyone who loads the page.
       # Each user supplies their own at runtime, so nothing key-shaped may ship.
       - name: Check no API key was built into the bundle

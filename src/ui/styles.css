@@ -353,3 +353,24 @@ button svg { vertical-align: -4px; }
 @media (prefers-reduced-motion: reduce) {
   .toast { animation: none; }
 }
+
+/* --- update notice ------------------------------------------------------ */
+
+.update-banner {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 40;
+  width: auto;
+  min-height: 46px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid var(--green);
+  background: var(--green-light);
+  color: var(--green-dark);
+  font-size: 15px;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+  max-width: calc(100% - 28px);
+}
