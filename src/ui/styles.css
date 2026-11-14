@@ -27,8 +27,10 @@
   --surface: #ffffff;
 
   --ink: #16191c;
-  --ink-2: #565c62;
-  --ink-3: #868d93;
+  --ink-2: #4a5056;
+  /* 4.6:1 on the paper background. The old value was 3.3:1 - legible on a desk, not in a
+     shop under strip lighting with a receipt in the other hand. */
+  --ink-3: #5f666c;
   --line: rgba(22, 25, 28, 0.1);
 
   --warn: #7c5100;
@@ -657,3 +659,56 @@ button.notice { display: block; width: 100%; font: inherit; font-size: 0.9375rem
   .toast { animation: none; }
   .spinner { animation-duration: 2.4s; }
 }
+
+/* --- profit per case ---------------------------------------------------- */
+
+.row-button.bare { border: 0; background: transparent; padding: 0; }
+
+/* Blue marks a number the owner controls; the shelf price is theirs, the cost is not. */
+.owner-price { color: #1b4f93; }
+
+.pc-strip {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: rgba(22, 25, 28, 0.04);
+}
+
+.pc-label { font-size: 0.8125rem; font-weight: 650; color: var(--ink-2); }
+
+.pc-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Colour says it faster; the sign and the words say it for anyone who cannot use the colour. */
+.pc-value.is-profit { color: var(--brand); }
+.pc-value.is-loss { color: var(--bad); }
+
+.pc-controls { display: flex; align-items: flex-end; gap: var(--sp-2); }
+
+.pc-step {
+  flex: none;
+  width: 56px;
+  min-height: 56px;
+  padding: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.pc-price { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pc-price input { min-height: 56px; font-size: 1.125rem; font-weight: 650; text-align: center; }
+
+.facts { display: flex; flex-direction: column; gap: var(--sp-2); margin: 0; }
+.facts > div { display: flex; justify-content: space-between; gap: var(--sp-3); }
+.facts dt { font-size: 0.9375rem; color: var(--ink-2); }
+.facts dd { margin: 0; font-size: 0.9375rem; font-weight: 650; }
+
+.failure-reason { display: block; color: var(--bad); white-space: normal; }
+
+.is-unsaved { color: var(--warn); font-weight: 650; }

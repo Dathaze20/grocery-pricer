@@ -71,9 +71,12 @@ count wins, never the sum.
 Open **<https://aistudio.google.com/app/apikey>**, sign in with your Google account, and press
 **Create API key**. This is the same Google AI Studio you may already use for other projects.
 
-The key goes on Google's **free tier**. Grocery Pricer never enables billing, never selects a paid
-model, and never upgrades anything on your behalf. If the free allowance runs out, it says exactly
-this and stops:
+Grocery Pricer never enables billing, never selects a paid model, and never upgrades anything on
+your behalf. What Google charges, if anything, is between you and Google: it depends on whether
+billing is enabled on the project your key belongs to, which models that project allows, and how
+much you use it. A key on a project with no billing stops at the free allowance rather than
+charging you — check your usage in Google AI Studio. If the free allowance runs out, the app says
+exactly this and stops:
 
 > Free Gemini quota reached. Grocery Pricer will not charge you. Try again after the quota resets.
 

@@ -117,7 +117,7 @@ async function main() {
     check('the app loads', await page.locator('text=NEW ORDER').isVisible());
     // Waited for rather than read once: the prompt appears when the stored key has actually
     // been looked up, so asserting it immediately would pass before anything was checked.
-    await page.waitForSelector('text=/add your free Gemini key/i', { timeout: 10000 });
+    await page.waitForSelector('text=/add your Gemini API key/i', { timeout: 10000 });
     check('it asks for a key before the first order', true);
 
     // --- settings ---------------------------------------------------------
@@ -166,7 +166,7 @@ async function main() {
     await page.waitForTimeout(300);
     check(
       'the setup prompt goes away once a key is stored',
-      (await page.locator('text=/add your free Gemini key/i').count()) === 0,
+      (await page.locator('text=/add your Gemini API key/i').count()) === 0,
     );
 
     // --- an order ---------------------------------------------------------
@@ -217,6 +217,68 @@ async function main() {
       calls.length === callsBeforeQuestion,
       `${calls.length - callsBeforeQuestion} extra call(s)`,
     );
+
+    // --- profit per case ---------------------------------------------------
+    // $24.00 for 12 was read from the (faked) receipt, so each is $2.00 and the suggested
+    // $4.99 earns 12 x $4.99 - $24.00 = $35.88 on the case.
+    await page.click('button[aria-label="The order"]');
+    await page.waitForSelector('.pc-value');
+    check(
+      'the case profit is shown on the product',
+      (await page.locator('.pc-value').first().innerText()).trim() === '$35.88',
+      await page.locator('.pc-value').first().innerText(),
+    );
+
+    const priceBox = page.locator('input[aria-label^="Selling price"]').first();
+    check('the suggested price is offered', (await priceBox.inputValue()) === '4.99');
+
+    // + asks the case for a dollar more. A case of twelve moves in twelve-cent steps, so the
+    // price rounds up and the case earns a little over the dollar - and says so.
+    await page.locator('button[aria-label^="Raise profit per case"]').first().click();
+    check(
+      'plus raises the target by a dollar',
+      (await page.locator('.pc-value').first().innerText()).trim() === '$36.96',
+      await page.locator('.pc-value').first().innerText(),
+    );
+    check('and moves the shelf price with it', (await priceBox.inputValue()) === '5.08');
+    check(
+      'and says what the target really earns',
+      await page.locator('text=/You asked for \\$36.88 a case/').isVisible(),
+    );
+
+    // Stepping the target rather than the result means + then - comes back to where it started
+    // instead of drifting up a few cents each press.
+    await page.locator('button[aria-label^="Lower profit per case"]').first().click();
+    check(
+      'minus returns exactly where it began',
+      (await page.locator('.pc-value').first().innerText()).trim() === '$35.88',
+      await page.locator('.pc-value').first().innerText(),
+    );
+    check('with the original price back', (await priceBox.inputValue()) === '4.99');
+
+    // Typed by hand, to the cent.
+    await priceBox.fill('6.25');
+    check(
+      'typing a price recalculates the case profit at once',
+      (await page.locator('.pc-value').first().innerText()).trim() === '$51.00',
+      await page.locator('.pc-value').first().innerText(),
+    );
+
+    // A price under cost has to say so rather than show a quiet negative.
+    await priceBox.fill('1.50');
+    check('a below-cost price is called out', await page.locator('text=/Below cost/i').isVisible());
+
+    await priceBox.fill('6.25');
+    await page.locator('button[aria-label^="Save the price"]').first().click();
+    await page.waitForTimeout(700);
+    check(
+      'the saved price is the owner\'s, not a suggestion',
+      (await page.locator('text=Your price').count()) > 0,
+      'labels on screen: ' + (await page.locator('.row-button .t-cap').allInnerTexts()).join(' | '),
+    );
+
+    await page.click('button:has-text("Back")');
+    await page.waitForTimeout(300);
 
     // --- the order survives a reload -------------------------------------
     await page.reload({ waitUntil: 'networkidle' });

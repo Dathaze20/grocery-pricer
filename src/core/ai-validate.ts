@@ -296,7 +296,14 @@ export function mergeExtractions(batches: readonly AiOrderExtraction[]): AiOrder
     }
     const key = `${upc}|${priceKey(item)}`;
     const existing = byBarcode.get(key);
-    byBarcode.set(key, existing === undefined ? item : combine(existing, item));
+    if (existing === undefined) {
+      byBarcode.set(key, item);
+    } else if (couldBeOnePrintedLine(existing, item)) {
+      byBarcode.set(key, combine(existing, item));
+    } else {
+      // The same barcode printed twice in one photograph is two cases of one product.
+      withoutBarcode.push(item);
+    }
   }
 
   // Everything else buckets on the two things that must agree exactly - package size and case
@@ -343,7 +350,25 @@ function priceKey(item: AiExtractedItem): string {
   return parsed?.toPlainString() ?? '?';
 }
 
+/**
+ * Whether two rows could be the same printed line seen twice.
+ *
+ * A wholesale receipt prints one line per case, so buying three of something prints it three
+ * times, identically, each with its own flyer discount. Those rows are three purchases and
+ * must never be folded together - doing so would quietly drop two cases and the money paid for
+ * them. Rows that cite the same photograph are therefore always distinct lines.
+ *
+ * Only rows read from *different* photographs can be one line seen twice, which is what the
+ * overlap between two pictures of a long receipt produces.
+ */
+function couldBeOnePrintedLine(a: AiExtractedItem, b: AiExtractedItem): boolean {
+  const photosA = new Set(a.sourcePhotoIds);
+  if (photosA.size === 0 || b.sourcePhotoIds.length === 0) return true;
+  return !b.sourcePhotoIds.some((id) => photosA.has(id));
+}
+
 function isSamePurchase(a: AiExtractedItem, b: AiExtractedItem): boolean {
+  if (!couldBeOnePrintedLine(a, b)) return false;
   const upcA = a.upc?.trim();
   const upcB = b.upc?.trim();
   if (upcA !== undefined && upcA.length > 0 && upcB !== undefined && upcB.length > 0) {

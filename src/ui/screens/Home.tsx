@@ -46,7 +46,7 @@ export function Home(props: { repo: Repository; go: (screen: Screen) => void }):
       <main>
         {keyed === false && (
           <button type="button" className="notice warn" onClick={() => go({ kind: 'settings' })}>
-            One-time setup: add your free Gemini key before the first order.
+            One-time setup: add your Gemini API key before the first order.
           </button>
         )}
 
@@ -104,6 +104,9 @@ export function Home(props: { repo: Repository; go: (screen: Screen) => void }):
                       <span className="t-cap">{dateOf(order)}</span>
                       <StatusChip order={order} />
                     </span>
+                    {order.status === OrderStatus.FAILED && order.failureMessage !== null && (
+                      <span className="t-cap failure-reason">{order.failureMessage}</span>
+                    )}
                   </span>
                   <ChevronRightIcon size={18} />
                 </button>
@@ -168,6 +171,9 @@ function StatusChip(props: { order: StoredOrder }): JSX.Element {
     case OrderStatus.PROCESSING:
       return <span className="chip chip-muted">Working on it…</span>;
     case OrderStatus.FAILED:
-      return <span className="chip chip-bad">Needs another go</span>;
+      // The chip is short because it sits in a row; the reason is printed under it, because
+      // "needs another go" does not tell anybody whether to add a key, find a signal or
+      // retake a blurry photograph.
+      return <span className="chip chip-bad">Did not finish</span>;
   }
 }

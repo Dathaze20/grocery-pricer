@@ -120,9 +120,13 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
           <summary>How do I get a key?</summary>
           <p>
             Open the link above, sign in with your Google account, press Create API key, then copy
-            it here. It is the same Google AI Studio you already use. The key goes on Google's free
-            tier — nothing is charged to you, and Grocery Pricer never enables billing or picks a
-            paid model.
+            it here. It is the same Google AI Studio you already use.
+
+            Grocery Pricer never turns billing on and never selects a paid model. What you are
+            charged, if anything, is between you and Google: it depends on whether billing is
+            enabled on the Google project the key belongs to, which model that project allows,
+            and how much you use it. A key on a project with no billing stops at the free
+            allowance instead of charging you. Check your usage in Google AI Studio.
           </p>
         </details>
 

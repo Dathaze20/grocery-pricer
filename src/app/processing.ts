@@ -197,6 +197,9 @@ async function priceOne(
     displayName: displayName.length > 0 ? displayName : (item.rawName ?? 'Unnamed item'),
     size: item.size ?? null,
     upc: item.upc ?? null,
+    supplierSku: item.supplierSku ?? null,
+    // The abbreviation as printed, so the next receipt recognises it without asking the model.
+    receiptName: item.rawName ?? null,
     category,
   });
 
@@ -240,10 +243,27 @@ async function priceOne(
     previousPrice: product.lastRetailPrice,
     confidence: confidenceOf(accepted),
     aiConfidence: item.confidence,
-    issues: [...accepted.issues],
+    issues: [...accepted.issues, ...costWarnings(product, trueUnitCost)],
     sourcePhotoIds: [...item.sourcePhotoIds],
     sourceText: [...item.sourceText],
   };
+}
+
+/**
+ * A price the owner approved once is not revised because the supplier put the cost up - it is
+ * their price. But a price that is now under the new cost loses money on every sale, and
+ * nobody notices that from a shelf tag, so it is flagged here.
+ */
+export const APPROVED_PRICE_BELOW_COST = 'APPROVED_PRICE_BELOW_COST';
+
+function costWarnings(
+  product: { lastRetailPrice: number | null },
+  trueUnitCost: Money | null,
+): string[] {
+  if (product.lastRetailPrice === null || trueUnitCost === null) return [];
+  return Money.fromStorage(product.lastRetailPrice).lessThan(trueUnitCost)
+    ? [APPROVED_PRICE_BELOW_COST]
+    : [];
 }
 
 function confidenceOf(accepted: ValidatedItem): ItemConfidence {
