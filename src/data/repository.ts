@@ -123,6 +123,26 @@ export class Repository {
     ]);
   }
 
+  /**
+   * Throws away orders that were started and abandoned before a single photo was taken.
+   *
+   * Pressing NEW ORDER creates the order up front, so backing out of that screen leaves a row
+   * behind. One is untidy; a month of them buries the orders that matter. An order with photos is
+   * never touched - that is work in progress, not litter.
+   */
+  async deleteEmptyDrafts(): Promise<number> {
+    const drafts = await this.db.getAllFromIndex('orders', 'status', OrderStatus.DRAFT);
+    let removed = 0;
+    for (const draft of drafts) {
+      const photos = await this.db.getAllKeysFromIndex('photos', 'orderId', draft.id);
+      if (photos.length === 0) {
+        await this.deleteOrder(draft.id);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
   // --- photos ---------------------------------------------------------------
 
   async addPhoto(photo: Omit<StoredPhoto, 'id'>): Promise<StoredPhoto> {

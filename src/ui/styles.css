@@ -124,6 +124,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 .danger { color: var(--bad); border-color: var(--bad); }
 
+/* Backing out is not destructive, and should not wear the colour that means "this deletes
+   something". Only Remove-the-key and Delete-order earn that. */
+.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
 /* --- cards -------------------------------------------------------------- */
 
 .card {
@@ -278,4 +286,70 @@ a { color: var(--green); }
 
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation-duration: 2.4s; }
+}
+
+/* --- confirmation ------------------------------------------------------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  /* Below the header, not over the button that was just pressed - covering the control you
+     touched is how a confirmation ends up reading as an error. */
+  top: calc(64px + env(safe-area-inset-top));
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 32px);
+  padding: 13px 20px;
+  border-radius: 999px;
+  background: var(--green);
+  color: var(--cream);
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  animation: toast-in 180ms ease-out;
+}
+
+.toast-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--cream);
+  color: var(--green);
+  flex: none;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* A button that has just done something, so the page is not the only thing that says so. */
+.button-done {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* An action that cannot run yet states what is missing instead of sitting there greyed out. */
+.primary:disabled {
+  background: transparent;
+  color: var(--muted);
+  border: 2px dashed var(--line);
+  opacity: 1;
+  font-size: 17px;
+}
+
+/* Icon buttons sit on the text baseline rather than floating above it. */
+button svg { vertical-align: -4px; }
+
+.secondary svg { margin-right: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
 }

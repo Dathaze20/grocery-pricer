@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { DEFAULT_GEMINI_MODEL, GEMINI_API_KEY_URL, SUGGESTED_GEMINI_MODELS } from '../../ai/model';
+import { GEMINI_API_KEY_URL, SUGGESTED_GEMINI_MODELS, configuredModel } from '../../ai/model';
 import type { Repository } from '../../data/repository';
 import type { Screen } from '../App';
 import { TopBar } from '../components/TopBar';
+import { Toast } from '../components/Toast';
+import { CheckIcon } from '../components/icons';
 
 /**
  * Where the shopkeeper puts their own Gemini key.
@@ -17,6 +19,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   const [model, setModel] = useState('');
   const [reveal, setReveal] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
   // True once the user has touched a field. Reading the stored values takes a moment on a cold
   // database, and someone who pastes their key in that moment must not have it wiped from under
   // them - which looks exactly like the app losing the key they just pasted.
@@ -35,10 +38,14 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
     // An empty box is not an instruction to forget the key: pressing Save on a field that has
     // not loaded yet, or was cleared by accident, would silently delete a working key. Removing
     // it is deliberate, and has its own button.
-    if (key.trim().length > 0) await repo.setApiKey(key);
+    const hadKey = key.trim().length > 0;
+    if (hadKey) await repo.setApiKey(key);
     await repo.setModel(model);
     setSaved(true);
+    setToast(hadKey ? 'Key saved' : 'Model saved');
     setTimeout(() => setSaved(false), 2500);
+    // Cleared so the same message can be shown again on the next save.
+    setTimeout(() => setToast(null), 100);
   }, [repo, key, model]);
 
   return (
@@ -83,18 +90,26 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
             type="text"
             value={model}
             spellCheck={false}
-            placeholder={DEFAULT_GEMINI_MODEL}
+            placeholder="Default"
             onChange={(event) => {
               edited.current = true;
               setModel(event.target.value);
             }}
           />
           <p className="muted">
-            Leave this empty unless Google retires a model. Suggested: {SUGGESTED_GEMINI_MODELS.join(', ')}.
+            Reading your receipts with <strong>{configuredModel(model)}</strong>. Leave empty for
+            the default; if Google ever retires it, try{' '}
+            {SUGGESTED_GEMINI_MODELS.find((name) => name !== configuredModel(model))}.
           </p>
 
-          <button type="button" className="primary" onClick={() => void save()}>
-            {saved ? 'Saved' : 'Save'}
+          <button type="button" className="primary button-done" onClick={() => void save()}>
+            {saved ? (
+              <>
+                <CheckIcon size={20} /> Saved
+              </>
+            ) : (
+              'Save'
+            )}
           </button>
 
           {key.length > 0 && (
@@ -105,6 +120,8 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
                 edited.current = true;
                 setKey('');
                 void repo.setApiKey(null);
+                setToast('Key removed');
+                setTimeout(() => setToast(null), 100);
               }}
             >
               Remove the key from this device
@@ -120,6 +137,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
           </p>
         </section>
       </main>
+      <Toast message={toast} />
     </div>
   );
 }

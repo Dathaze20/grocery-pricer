@@ -92,6 +92,7 @@ export function NewOrder(props: {
         <button
           type="button"
           className="primary huge"
+          aria-label="Process order"
           disabled={busy || photos.length === 0}
           onClick={() => void process()}
         >
@@ -100,16 +101,18 @@ export function NewOrder(props: {
               <span className="spinner" aria-hidden="true" />
               {step ?? 'Working'}…
             </>
+          ) : photos.length === 0 ? (
+            // A greyed-out button with the hint somewhere else reads as broken. Say what is
+            // missing on the button itself.
+            'Take a photo of the receipt first'
           ) : (
-            'PROCESS ORDER'
+            `PROCESS ORDER (${photos.length} ${photos.length === 1 ? 'photo' : 'photos'})`
           )}
         </button>
 
-        {photos.length === 0 && <p className="muted center">Add a photo to get started.</p>}
-
         <button
           type="button"
-          className="secondary danger"
+          className="secondary quiet"
           disabled={busy}
           onClick={() => {
             void repo.order(orderId).then(async (order) => {
