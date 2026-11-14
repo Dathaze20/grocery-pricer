@@ -307,6 +307,34 @@ async function main() {
     await priceBox.fill('1.50');
     check('a below-cost price is called out', await page.locator('text=/Below cost/i').isVisible());
 
+    // The stale-draft bug: type a new price, then clear the box. Nothing is on screen to save,
+    // so Save must not be offered - it used to still be holding the number that was wiped.
+    await priceBox.fill('6.25');
+    await priceBox.fill('');
+    check(
+      'an emptied price box offers nothing to save',
+      (await page.locator('button[aria-label^="Save the price"]').count()) === 0,
+    );
+    check(
+      'and says so instead of showing a price it would save',
+      await page.locator('text=/Type a price, or press Cancel/').isVisible(),
+    );
+    check(
+      'and the case profit goes blank with it',
+      (await page.locator('.pc-value').first().innerText()).trim() === '—',
+      await page.locator('.pc-value').first().innerText(),
+    );
+
+    // Half-typed is the same promise.
+    await priceBox.fill('6.2.5');
+    check(
+      'a half-typed price offers nothing to save either',
+      (await page.locator('button[aria-label^="Save the price"]').count()) === 0,
+    );
+
+    await page.locator('button:has-text("Cancel")').first().click();
+    check('cancel puts the suggestion back', (await priceBox.inputValue()) === '4.99');
+
     await priceBox.fill('6.25');
     await page.locator('button[aria-label^="Save the price"]').first().click();
     await page.waitForTimeout(700);

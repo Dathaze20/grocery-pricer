@@ -11,6 +11,7 @@ import type { StoredItem } from '../../data/schema';
 import type { Screen } from '../App';
 import { TopBar } from '../components/TopBar';
 import { useUpdateHold } from '../useUpdateHold';
+import { holdsUnsavedWork, readPriceEdit } from '../priceEdit';
 import { Toast } from '../components/Toast';
 import { CheckIcon } from '../components/icons';
 
@@ -120,18 +121,13 @@ function ItemRow(props: {
   const suggested = item.suggestedPrice === null ? null : Money.fromStorage(item.suggestedPrice);
   const live = approved ?? suggested;
 
-  // What the shopkeeper is editing, in whole cents, until they save it.
-  const [draft, setDraft] = useState<Money | null>(live);
+  // The box is the only record of what the shopkeeper is editing. A parsed copy kept beside it
+  // drifts the moment the box is cleared, and then Save writes a number nobody can see.
   const [priceText, setPriceText] = useState(live === null ? '' : live.toPlainString());
   const [targetText, setTargetText] = useState('');
-  /**
-   * True while the box holds something that is not yet a price.
-   *
-   * Half-typed input must not be saved, and it must not save the *previous* value either: a box
-   * reading "6." with $4.99 still in state would otherwise store $4.99 while the screen shows
-   * something else entirely.
-   */
-  const [typing, setTyping] = useState(false);
+
+  const edit = readPriceEdit(priceText, live);
+  const draft = edit.value;
   /**
    * What the owner asked the case to earn, when they have asked.
    *
@@ -143,9 +139,7 @@ function ItemRow(props: {
   const [target, setTarget] = useState<Money | null>(null);
 
   useEffect(() => {
-    setDraft(live);
     setPriceText(live === null ? '' : live.toPlainString());
-    setTyping(false);
     // Only when the stored price itself changes - typing must not be overwritten.
   }, [item.approvedPrice, item.suggestedPrice]);
 
@@ -159,20 +153,18 @@ function ItemRow(props: {
         })
       : null;
 
-  // Changed from whatever is currently showing - not from the approved price, which is often
-  // null. Otherwise every untouched row offers to cancel something nobody did.
-  const dirty = (draft?.toStorage() ?? null) !== (live?.toStorage() ?? null);
-  const unapproved = approved === null && draft !== null;
+  const dirty = edit.dirty;
+  const typing = edit.state === 'incomplete';
+  const blank = edit.state === 'blank' && dirty;
+  const unapproved = approved === null && draft !== null && !dirty;
 
-  // A price typed and not yet saved is unsaved work. An automatic update reloads the page, and
-  // a reload here throws the edit away silently.
-  useUpdateHold(dirty || typing, 'blocking');
+  // Unsaved work, of any kind: a changed price, a half-typed one, an emptied box, or an exact
+  // profit target being typed. An automatic update reloads the page and would take all of it.
+  useUpdateHold(holdsUnsavedWork(edit, targetText), 'blocking');
 
   const setPrice = useCallback((price: Money) => {
     const safe = price.isNegative ? Money.ZERO : price.roundedToCents();
-    setDraft(safe);
     setPriceText(safe.toPlainString());
-    setTyping(false);
   }, []);
 
   /** + and - move the target profit on the case by a dollar, then work back to a shelf price. */
@@ -197,16 +189,16 @@ function ItemRow(props: {
   }, [netCaseCost, unitsPerCase, targetText, setPrice]);
 
   const save = useCallback(async () => {
-    // Saving what is in the box, not what used to be: an unparseable box saves nothing.
-    if (draft === null || typing) return;
-    await repo.approvePrice(item.id, draft);
+    // Saves what the box is showing, or nothing at all. There is no second copy to fall back on.
+    const current = readPriceEdit(priceText, live);
+    if (current.value === null) return;
+    await repo.approvePrice(item.id, current.value);
     await props.onSaved(`Saved ${item.displayName}`);
-  }, [repo, item.id, item.displayName, draft, typing, props]);
+  }, [repo, item.id, item.displayName, priceText, live, props]);
 
   const cancel = useCallback(() => {
-    setDraft(live);
     setTarget(null);
-    setTyping(false);
+    setTargetText('');
     setPriceText(live === null ? '' : live.toPlainString());
   }, [live]);
 
@@ -287,12 +279,8 @@ function ItemRow(props: {
                 value={priceText}
                 aria-label={`Selling price for ${item.displayName}`}
                 onChange={(event) => {
-                  const text = event.target.value;
-                  setPriceText(text);
+                  setPriceText(event.target.value);
                   setTarget(null);
-                  const parsed = Money.parseOrNull(text);
-                  setTyping(parsed === null && text.trim().length > 0);
-                  if (parsed !== null) setDraft(parsed.isNegative ? Money.ZERO : parsed);
                 }}
               />
             </label>
@@ -307,8 +295,9 @@ function ItemRow(props: {
           </div>
 
           {typing && <p className="notice warn">That is not a price yet.</p>}
+          {blank && <p className="notice warn">Type a price, or press Cancel to put it back.</p>}
 
-          {dirty && !typing ? (
+          {edit.canSave ? (
             <div className="row">
               <button
                 type="button"
@@ -322,9 +311,13 @@ function ItemRow(props: {
                 Cancel
               </button>
             </div>
+          ) : dirty ? (
+            // Nothing saveable, but something to undo.
+            <button type="button" className="btn btn-quiet btn-block" onClick={cancel}>
+              Cancel
+            </button>
           ) : (
-            unapproved &&
-            !typing && (
+            unapproved && (
               // Taking the suggestion is a decision too, and it is the common one. Until it is
               // made the price stays labelled a suggestion.
               <button
