@@ -8,7 +8,7 @@ import type { ImagePart } from '../ai/gemini';
  * is a receipt that cannot be read, and an unreadable receipt is a wrong price. 1600px on the long
  * edge is the compromise: roughly a third of the bytes, with the small print still legible.
  */
-export const MAX_EDGE_PX = 1600;
+export const MAX_EDGE_PX = 2000;
 export const JPEG_QUALITY = 0.85;
 
 /** A photograph as it is stored: raw bytes, not a Blob. See StoredPhoto for why. */

@@ -9,8 +9,16 @@ import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
 import { updates } from '../updates';
 import { useUpdateHold } from '../useUpdateHold';
-import { CameraIcon, ListIcon, SendIcon, TruckIcon } from '../components/icons';
+import { CameraIcon, ListIcon, SendIcon, TruckIcon, MicIcon } from '../components/icons';
 import { providerFor } from '../services';
+import { jobs, type JobState } from '../../app/jobs';
+import { dictationAvailable, useDictation } from '../useDictation';
+
+/** A question asked while the receipt was still being read, waiting for the figures. */
+interface Pending {
+  readonly question: string;
+  readonly file?: File;
+}
 
 export function OrderChat(props: {
   repo: Repository;
@@ -22,6 +30,14 @@ export function OrderChat(props: {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [job, setJob] = useState<JobState | null>(() => jobs.stateOf(orderId));
+  const [queued, setQueued] = useState<Pending | null>(null);
+
+  const dictation = useDictation((heard) =>
+    // Into the field, not out the door: the owner reads it and fixes it before sending.
+    setText((current) => (current.trim().length > 0 ? `${current} ${heard}` : heard)),
+  );
+  const canDictate = dictationAvailable();
 
   const bottom = useRef<HTMLDivElement>(null);
 
@@ -38,14 +54,52 @@ export function OrderChat(props: {
     void reload();
   }, [reload]);
 
+  /*
+   * Watches the receipt being read, rather than doing the reading.
+   *
+   * The work belongs to the coordinator, so this screen can be opened, left and opened again
+   * without touching it. Arriving here is what the owner does immediately after pressing the
+   * button, so in the common case this subscribes to a job that is already under way.
+   */
+  useEffect(() => jobs.subscribe(orderId, setJob), [orderId]);
+
+  const reading = job?.kind === 'running';
+
+  useEffect(() => {
+    if (job?.kind === 'done' || job?.kind === 'failed') void reload();
+  }, [job, reload]);
+
+
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'end' });
   }, [messages]);
 
   const send = useCallback(
-    async (question: string, file?: File) => {
+    async (question: string, file?: File, options: { alreadyShown?: boolean } = {}) => {
       const trimmed = question.trim();
       if (trimmed.length === 0 && file === undefined) return;
+
+      /*
+       * Nothing is asked of the model while the receipt is still being read.
+       *
+       * The costs are not in the database yet, so an answer now would be built out of nothing -
+       * and a confidently wrong price is worse than no price at all. The question is kept,
+       * said back to the owner so they can see it was heard, and put to the model the moment
+       * the figures exist.
+       */
+      if (options.alreadyShown !== true && jobs.isRunning(orderId)) {
+        setText('');
+        setQueued({ question: trimmed, file });
+        await repo.say(orderId, MessageRole.USER, trimmed.length > 0 ? trimmed : 'How much is this?');
+        await repo.say(
+          orderId,
+          MessageRole.APP,
+          'I am still reading the receipt, so I do not have the costs yet. I will answer this as soon as it is done.',
+        );
+        await reload();
+        return;
+      }
+
       setBusy(true);
       setText('');
       // Held by the question, not by the screen: the answer is still coming after Back.
@@ -77,6 +131,19 @@ export function OrderChat(props: {
     [repo, orderId, reload],
   );
 
+  /*
+   * Answers what was asked while the reading was going on.
+   *
+   * Only on success. If the receipt could not be read there are still no costs, and the
+   * honest thing is to leave the question unanswered and say so rather than guess at it.
+   */
+  useEffect(() => {
+    if (job?.kind !== 'done' || queued === null) return;
+    const pending = queued;
+    setQueued(null);
+    void send(pending.question, pending.file, { alreadyShown: true });
+  }, [job, queued, send]);
+
   return (
     <div className="app">
       <TopBar
@@ -99,8 +166,41 @@ export function OrderChat(props: {
               {message.text}
             </div>
           ))}
+          {reading && (
+            <div className="bubble reply status t-sub">
+              <span className="spinner on-paper" aria-hidden="true" />
+              {job?.kind === 'running' && job.step !== 'Starting'
+                ? `${job.step}…`
+                : 'Reading your receipt…'}
+            </div>
+          )}
+
+          {job?.kind === 'done' && job.result.itemCount > 0 && (
+            <div className="bubble reply status t-sub">
+              Receipt read - {job.result.itemCount}{' '}
+              {job.result.itemCount === 1 ? 'product' : 'products'} ready. Ask me what anything
+              costs.
+            </div>
+          )}
+
+          {job?.kind === 'failed' && (
+            // The photographs and any approved prices are untouched, so this really is just a
+            // matter of pressing it again.
+            <div className="bubble reply status">
+              {job.result.summary}
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                style={{ marginTop: 'var(--sp-3)' }}
+                onClick={() => jobs.start(repo, providerFor, orderId, { reprocess: true })}
+              >
+                Try reading it again
+              </button>
+            </div>
+          )}
+
           {busy && (
-            <div className="bubble reply t-sub">
+            <div className="bubble reply status t-sub">
               <span className="spinner on-paper" aria-hidden="true" />
               Thinking…
             </div>
@@ -121,7 +221,7 @@ export function OrderChat(props: {
           <input
             type="text"
             value={text}
-            placeholder="Ask about this order…"
+            placeholder={dictation.listening ? 'Listening…' : 'Ask about this order…'}
             enterKeyHint="send"
             disabled={busy}
             onChange={(event) => setText(event.target.value)}
@@ -130,6 +230,18 @@ export function OrderChat(props: {
             }}
           />
           <PhotoPickerButton disabled={busy} onPick={(file) => void send(text, file)} />
+          {canDictate && (
+            <button
+              type="button"
+              className={`icon-btn${dictation.listening ? ' listening' : ''}`}
+              disabled={busy}
+              aria-label={dictation.listening ? 'Stop listening' : 'Ask out loud'}
+              aria-pressed={dictation.listening}
+              onClick={() => (dictation.listening ? dictation.stop() : dictation.start())}
+            >
+              <MicIcon size={20} />
+            </button>
+          )}
           <button
             type="button"
             className="icon-btn send"
@@ -140,6 +252,7 @@ export function OrderChat(props: {
             <SendIcon size={20} />
           </button>
         </div>
+        {dictation.error !== null && <p className="notice warn">{dictation.error}</p>}
       </main>
     </div>
   );

@@ -121,3 +121,15 @@ export function SendIcon(props: IconProps): JSX.Element {
     </Svg>
   );
 }
+
+/** A microphone, for asking out loud instead of typing on a phone with cold hands. */
+export function MicIcon({ size = 24 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="2" width="6" height="11" rx="3" />
+      <path d="M5 10v1a7 7 0 0 0 14 0v-1" />
+      <line x1="12" y1="18" x2="12" y2="22" />
+    </svg>
+  );
+}

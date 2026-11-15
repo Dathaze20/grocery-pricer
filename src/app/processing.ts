@@ -7,11 +7,19 @@ import { DiscountScope } from '../core/models';
 import { PricingEngine, defaultPricingRules, type PricingRules } from '../core/pricing';
 import type { AiProvider, IdentifiedImage } from '../ai/provider';
 import type { Repository } from '../data/repository';
-import { MessageRole, OrderStatus, type StoredItem, type StoredPhoto } from '../data/schema';
+import { MessageRole, OrderStatus, type StoredItem } from '../data/schema';
 import { toImagePart } from './images';
 
 /** Photos per Gemini call. Enough context to read a whole receipt, few enough to stay inside a reply. */
-export const PHOTOS_PER_BATCH = 3;
+/**
+ * Photographs per extraction request.
+ *
+ * Was three. Each one carries a full-resolution JPEG as base64, and a request that takes too
+ * long is lost whole - three photographs' worth of waiting for nothing. Two keeps each request
+ * smaller and quicker, makes the progress line move more often, and means a timeout costs one
+ * pair rather than a third of the receipt.
+ */
+export const PHOTOS_PER_BATCH = 2;
 
 export interface ProcessOptions {
   readonly rules?: PricingRules;
@@ -28,12 +36,26 @@ export interface ProcessOptions {
   readonly reprocess?: boolean;
 }
 
+/** How long one phase of the work took. Durations only - never content. */
+export interface PhaseTiming {
+  readonly phase: string;
+  readonly ms: number;
+}
+
 export interface ProcessResult {
   readonly ok: boolean;
   readonly itemCount: number;
   readonly warnings: readonly string[];
   readonly error: AiError | null;
   readonly summary: string;
+  /**
+   * What each phase cost, in milliseconds.
+   *
+   * Timings only: no photograph, no prompt, no reply, no key, nothing off a receipt. This is
+   * the one thing that was missing when a real shop watched "Reading photo 1 of 7" for six
+   * minutes - there was no way to say which phase had eaten the time.
+   */
+  readonly timings: readonly PhaseTiming[];
 }
 
 /**
@@ -53,9 +75,26 @@ export async function processOrder(
   const rules = options.rules ?? defaultPricingRules();
   const progress = options.onProgress ?? (() => {});
 
+  const timings: PhaseTiming[] = [];
+  const time = async <T>(phase: string, work: () => Promise<T>): Promise<T> => {
+    const started = Date.now();
+    try {
+      return await work();
+    } finally {
+      timings.push({ phase, ms: Date.now() - started });
+    }
+  };
+
   const order = await repo.order(orderId);
   if (order === undefined || order === null) {
-    return { ok: false, itemCount: 0, warnings: [], error: null, summary: 'That order is gone.' };
+    return {
+      ok: false,
+      itemCount: 0,
+      warnings: [],
+      error: null,
+      summary: 'That order is gone.',
+      timings: [],
+    };
   }
 
   // Reading a receipt again replaces what is in the order. On an order that has already been
@@ -69,27 +108,51 @@ export async function processOrder(
       warnings: [],
       error: null,
       summary: 'That order has already been read. Open it to see the products and prices.',
+      timings: [],
     };
   }
 
   const photos = (await repo.photosFor(orderId, false)).sort((a, b) => a.id - b.id);
   if (photos.length === 0) {
-    return fail(repo, orderId, null, 'Add a photo of the receipt first.', order.status, existing);
+    return fail(
+      repo,
+      orderId,
+      null,
+      'Add a photo of the receipt first.',
+      order.status,
+      existing,
+      timings,
+    );
   }
 
   await repo.updateOrder(orderId, { status: OrderStatus.PROCESSING, failureMessage: null });
   progress('Reading the photos');
 
-  const parts: IdentifiedImage[] = [];
-  for (const photo of photos) {
-    const part = await toImagePart({ bytes: photo.bytes, mimeType: photo.mimeType });
-    parts.push({ photoId: photo.id, ...part });
-  }
+  const parts = await time('prepare-photos', async () => {
+    const prepared: IdentifiedImage[] = [];
+    for (const photo of photos) {
+      const part = await toImagePart({ bytes: photo.bytes, mimeType: photo.mimeType });
+      prepared.push({ photoId: photo.id, ...part });
+    }
+    return prepared;
+  });
 
-  // Sorting the photos first means a product snapshot in the middle of a receipt roll does not
-  // get read as though it were a line of printed figures.
-  const classified = await classify(provider, parts, photos);
-  const paperwork = parts.filter((part) => classified.get(part.photoId) !== OrderImageType.PRODUCT_PHOTO);
+  /*
+   * No classification round-trip.
+   *
+   * This used to send every photograph in the order - all seven, in one request - to ask which
+   * were receipts, before a single line had been read. It was the largest payload of the whole
+   * run and it bought nothing: its own failure path already assumed every photograph was a
+   * receipt, and shipped that way for weeks. Something a program is willing to guess when the
+   * call fails is not worth a call.
+   *
+   * What a photograph is, where it is actually known, is used: a snapshot taken through the
+   * chat is stored as a PRODUCT_PHOTO when it is added, and is still skipped here.
+   */
+  const paperwork = parts.filter((part) => {
+    const photo = photos.find((p) => p.id === part.photoId);
+    return photo?.type !== OrderImageType.PRODUCT_PHOTO;
+  });
   if (paperwork.length === 0) {
     return fail(
       repo,
@@ -98,6 +161,7 @@ export async function processOrder(
       'None of those photos look like a receipt or a case label.',
       order.status,
       existing,
+      timings,
     );
   }
 
@@ -105,7 +169,9 @@ export async function processOrder(
   for (let i = 0; i < paperwork.length; i += PHOTOS_PER_BATCH) {
     const batch = paperwork.slice(i, i + PHOTOS_PER_BATCH);
     progress(`Reading photo ${i + 1} of ${paperwork.length}`);
-    const result = await withOneRetry(() => provider.extractOrder(batch), options.retryDelayMs);
+    const result = await time(`extract-${i / PHOTOS_PER_BATCH + 1}`, () =>
+      withOneRetry(() => provider.extractOrder(batch), options.retryDelayMs),
+    );
     if (!result.ok) {
       // A spent quota or a rejected key will not fix itself on the next batch. Stopping here
       // keeps a half-read order from being presented as a whole one.
@@ -184,40 +250,7 @@ export async function processOrder(
   const summary = summarise(saved, orderTotal, warnings);
   await repo.say(orderId, MessageRole.APP, summary);
 
-  return { ok: true, itemCount: saved.length, warnings, error: null, summary };
-}
-
-/**
- * Sorts the photos so a shelf snapshot is not read as a receipt.
- *
- * A failed classification is not a failed order: everything is treated as paperwork, which is
- * what it almost always is. Spending a user's quota on a second attempt at sorting would be
- * worse than being slightly wrong about one photo.
- */
-async function classify(
-  provider: AiProvider,
-  parts: readonly IdentifiedImage[],
-  photos: readonly StoredPhoto[],
-): Promise<Map<number, OrderImageType>> {
-  const known = new Map<number, OrderImageType>();
-  const unknown = parts.filter((part) => {
-    const photo = photos.find((p) => p.id === part.photoId);
-    if (photo !== undefined && photo.type !== OrderImageType.UNKNOWN) {
-      known.set(part.photoId, photo.type);
-      return false;
-    }
-    return true;
-  });
-  if (unknown.length === 0) return known;
-
-  const result = await provider.classifyImages(unknown);
-  if (!result.ok) {
-    for (const part of unknown) known.set(part.photoId, OrderImageType.RECEIPT);
-    return known;
-  }
-  for (const part of unknown) known.set(part.photoId, OrderImageType.RECEIPT);
-  for (const row of result.value) known.set(row.photoId, row.type);
-  return known;
+  return { ok: true, itemCount: saved.length, warnings, error: null, summary, timings };
 }
 
 /** Turns one validated row into a stored, costed, priced item. */
@@ -353,6 +386,18 @@ async function withOneRetry<T>(
 ): Promise<T & { ok: boolean; error?: AiError }> {
   const first = await call();
   if (first.ok || first.error === undefined || !isTransient(first.error)) return first;
+
+  /*
+   * A timeout is not retried with the same payload.
+   *
+   * It was, and it is how a real shop came to watch one progress line for six minutes: the
+   * request ran its ninety seconds, failed, and the identical photographs went out again to
+   * spend another ninety. Nothing about the second attempt was more likely to finish. Being
+   * busy or briefly unreachable is worth one more try; being too slow for the payload is a
+   * reason to make the payload smaller, which is what the batch size now does.
+   */
+  if (first.error.kind === 'timeout') return first;
+
   if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
   return call();
 }
@@ -372,6 +417,7 @@ async function fail(
   message: string,
   previousStatus: OrderStatus = OrderStatus.FAILED,
   previousItems: readonly StoredItem[] = [],
+  timings: readonly PhaseTiming[] = [],
 ): Promise<ProcessResult> {
   const keptData = previousItems.length > 0;
   await repo.updateOrder(orderId, {
@@ -379,7 +425,14 @@ async function fail(
     failureMessage: message,
   });
   await repo.say(orderId, MessageRole.APP, message);
-  return { ok: false, itemCount: previousItems.length, warnings: [], error, summary: message };
+  return {
+    ok: false,
+    itemCount: previousItems.length,
+    warnings: [],
+    error,
+    summary: message,
+    timings,
+  };
 }
 
 function summarise(items: readonly StoredItem[], total: Money, warnings: readonly string[]): string {

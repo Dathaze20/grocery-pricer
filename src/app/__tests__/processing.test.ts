@@ -287,11 +287,16 @@ describe('processOrder', () => {
     await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
 
     const calls = provider.calls.filter((c) => c.startsWith('extractOrder'));
-    expect(calls).toHaveLength(3);
-    expect(calls[0]!.split(',')).toHaveLength(3);
+    // Two photographs per request, so seven go out as four. Smaller requests come back sooner
+    // and a slow one costs a pair rather than a third of the receipt.
+    expect(calls).toHaveLength(4);
+    expect(calls[0]!.split(',')).toHaveLength(2);
+
+    // And no classification round-trip: nothing is sent before the reading begins.
+    expect(provider.calls.filter((c) => c.startsWith('classifyImages'))).toHaveLength(0);
   });
 
-  it('skips photos of products when reading the paperwork', async () => {
+  it('skips photos already known to be of products, without asking first', async () => {
     const order = await repo.createOrder();
     const receipt = await repo.addPhoto({
       orderId: order.id,
@@ -301,22 +306,52 @@ describe('processOrder', () => {
       isDeliveryPhoto: false,
       createdAt: 1,
     });
+    // A snapshot taken through the chat is stored as a product photo when it is added, which
+    // is where that knowledge comes from now that nothing is sent away to ask.
     const shelf = await repo.addPhoto({
       orderId: order.id,
       bytes: photoBytes(),
       mimeType: 'image/jpeg',
-      type: OrderImageType.UNKNOWN,
+      type: OrderImageType.PRODUCT_PHOTO,
       isDeliveryPhoto: false,
       createdAt: 2,
     });
-    const provider = new FakeAiProvider().queueClassification([
-      { photoId: receipt.id, type: OrderImageType.RECEIPT, confidence: 0.9 },
-      { photoId: shelf.id, type: OrderImageType.PRODUCT_PHOTO, confidence: 0.9 },
-    ]);
+    const provider = new FakeAiProvider();
 
     await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
 
     expect(provider.calls).toContain(`extractOrder(${receipt.id})`);
+    expect(provider.calls.join(' ')).not.toContain(String(shelf.id));
+    expect(provider.calls.filter((c) => c.startsWith('classifyImages'))).toHaveLength(0);
+  });
+
+  it('does not re-send a request that already ran out of time', async () => {
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'timeout' });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(result.ok).toBe(false);
+    // One attempt, not two. The same photographs going out again would spend another ninety
+    // seconds without being any more likely to finish.
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(1);
+  });
+
+  it('times each phase, and records nothing but durations', async () => {
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+
+    const result = await processOrder(repo, provider, orderId);
+
+    expect(result.timings.length).toBeGreaterThan(0);
+    expect(result.timings.map((t) => t.phase)).toContain('prepare-photos');
+    for (const timing of result.timings) {
+      expect(typeof timing.ms).toBe('number');
+      // Phase names are fixed labels. No file name, no product, no price, no key.
+      expect(timing.phase).toMatch(/^[a-z-]+(-\d+)?$/);
+    }
   });
 
   it('keeps a nameless row out of the order and says a line was dropped', async () => {

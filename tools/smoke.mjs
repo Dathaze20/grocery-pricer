@@ -208,8 +208,23 @@ async function main() {
     check('a photographed receipt appears', (await page.locator('.photo').count()) === 1);
 
     await page.click('button[aria-label="Process order"]');
-    await waitOrExplain(page, '.bubble.reply', { served, errors });
-    const opening = await page.locator('.bubble.reply').first().innerText();
+
+    // The chat opens at once now, while the receipt is still being read. That is the point of
+    // the change, so the test asserts it rather than waiting the wait away.
+    await page.waitForSelector('.chat', { timeout: 5000 });
+    check('the chat opens immediately, without waiting for the receipt', true);
+    check(
+      'and says what it is doing while it reads',
+      await page.locator('text=/Reading your receipt|Reading photo/').first().isVisible(),
+    );
+    check(
+      'with the question box usable while it reads',
+      await page.isEnabled('input[placeholder*="Ask about"]'),
+    );
+
+    // Then the figures arrive on their own.
+    await waitOrExplain(page, 'text=/Receipt read/', { served, errors });
+    const opening = await page.locator('.bubble.reply:not(.status)').first().innerText();
     check('the order is summarised', opening.includes('1 product'), opening);
     check('the total is the app\'s own arithmetic', opening.includes('$24.00'), opening);
     check('gemini was actually called', calls.length > 0);
@@ -218,10 +233,10 @@ async function main() {
     const callsBeforeQuestion = calls.length;
     await page.fill('.composer input[type=text]', 'how much is the mayonnaise');
     await page.click('button[aria-label="Send"]');
-    await page.waitForFunction(() => document.querySelectorAll('.bubble').length >= 3, null, {
+    await page.waitForFunction(() => document.querySelectorAll('.bubble .spinner').length === 0, null, {
       timeout: 20000,
     });
-    const answer = await page.locator('.bubble.reply').last().innerText();
+    const answer = await page.locator('.bubble.reply:not(.status)').last().innerText();
     // $24.00 for 12 is $2.00 each, which is the $2.00-$2.99 rung: $4.99.
     check('the answer is priced from the local engine', answer.includes('$4.99'), answer);
     check('the answer names the product', answer.toLowerCase().includes('mayonnaise'), answer);
@@ -245,7 +260,7 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll('.bubble').length >= 5, null, {
       timeout: 20000,
     });
-    const photoAnswer = await page.locator('.bubble.reply').last().innerText();
+    const photoAnswer = await page.locator('.bubble.reply:not(.status)').last().innerText();
     check(
       'a photographed product is priced from the receipt',
       photoAnswer.includes('$2.00 each → $4.99 (suggested)'),
