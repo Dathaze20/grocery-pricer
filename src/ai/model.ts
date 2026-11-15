@@ -41,6 +41,11 @@ export function configuredModel(override?: string | null): string {
   return fromBuild !== undefined && fromBuild.length > 0 ? fromBuild : DEFAULT_GEMINI_MODEL;
 }
 
+/** The models this key may call. Used to answer a 404 with a list rather than a shrug. */
+export function listModelsUrl(): string {
+  return `${GEMINI_API_BASE}/models?pageSize=200`;
+}
+
 export function generateContentUrl(model: string): string {
   return `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
 }

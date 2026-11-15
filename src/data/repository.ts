@@ -165,6 +165,36 @@ export class Repository {
 
   // --- items ----------------------------------------------------------------
 
+  /**
+   * Swaps this order's rows for a new set, in one transaction.
+   *
+   * Replacing rather than clearing is the whole point. A clear followed later by an insert has
+   * a window in between where the order has nothing in it, and if the work that was meant to
+   * fill it fails - the model refuses, the connection drops, the tab is closed - the shopkeeper
+   * is left with an order whose products are simply gone. Here the old rows go only once the
+   * new ones are ready, and IndexedDB aborts the whole transaction if any part of it fails, so
+   * the order holds either the old set or the new one and never neither.
+   *
+   * Photographs, products, price history, conversations and the stored key live in other
+   * stores and are not touched.
+   */
+  async replaceItems(
+    orderId: number,
+    items: ReadonlyArray<Omit<StoredItem, 'id'>>,
+  ): Promise<StoredItem[]> {
+    const tx = this.db.transaction('items', 'readwrite');
+    const previous = await tx.store.index('orderId').getAllKeys(orderId);
+    for (const key of previous) await tx.store.delete(key);
+
+    const saved: StoredItem[] = [];
+    for (const item of items) {
+      const id = await tx.store.add(item as StoredItem);
+      saved.push({ ...item, id });
+    }
+    await tx.done;
+    return saved;
+  }
+
   async addItems(items: ReadonlyArray<Omit<StoredItem, 'id'>>): Promise<StoredItem[]> {
     const tx = this.db.transaction('items', 'readwrite');
     const saved: StoredItem[] = [];
