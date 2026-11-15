@@ -14,6 +14,14 @@ export interface AskOptions {
   readonly photo?: { id: number; image: RawImage } | null;
   /** Set false to answer without ever calling Gemini. */
   readonly allowAi?: boolean;
+  /**
+   * The question is already in the conversation, so do not write it again.
+   *
+   * True for a question asked while the receipt was still being read: it was shown at the time
+   * so the owner could see it had been heard, and answering it later must not make it appear
+   * in the thread a second time.
+   */
+  readonly alreadyAsked?: boolean;
 }
 
 export interface Answer {
@@ -42,7 +50,9 @@ export async function ask(
   const stored = await repo.itemsFor(orderId);
   const engine = new OrderQueryEngine(stored.map(toQueryable));
 
-  await repo.say(orderId, MessageRole.USER, text, { photoId: options.photo?.id ?? null });
+  if (options.alreadyAsked !== true) {
+    await repo.say(orderId, MessageRole.USER, text, { photoId: options.photo?.id ?? null });
+  }
 
   const answer = await resolve(repo, provider, engine, stored, orderId, text, options);
   await repo.say(orderId, MessageRole.APP, answer.text, { referencedItemIds: [...answer.itemIds] });

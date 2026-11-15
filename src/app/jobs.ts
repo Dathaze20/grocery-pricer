@@ -85,6 +85,7 @@ class ProcessingJobs {
           kind: 'failed',
           result: {
             ok: false,
+            outcome: 'failed',
             itemCount: 0,
             warnings: [],
             error: null,

@@ -12,13 +12,8 @@ import { useUpdateHold } from '../useUpdateHold';
 import { CameraIcon, ListIcon, SendIcon, TruckIcon, MicIcon } from '../components/icons';
 import { providerFor } from '../services';
 import { jobs, type JobState } from '../../app/jobs';
+import { pending, type PendingQuestion } from '../../app/pending';
 import { dictationAvailable, useDictation } from '../useDictation';
-
-/** A question asked while the receipt was still being read, waiting for the figures. */
-interface Pending {
-  readonly question: string;
-  readonly file?: File;
-}
 
 export function OrderChat(props: {
   repo: Repository;
@@ -31,7 +26,7 @@ export function OrderChat(props: {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [job, setJob] = useState<JobState | null>(() => jobs.stateOf(orderId));
-  const [queued, setQueued] = useState<Pending | null>(null);
+  const [queue, setQueue] = useState<readonly PendingQuestion[]>(() => pending.queue(orderId));
 
   const dictation = useDictation((heard) =>
     // Into the field, not out the door: the owner reads it and fixes it before sending.
@@ -63,6 +58,9 @@ export function OrderChat(props: {
    */
   useEffect(() => jobs.subscribe(orderId, setJob), [orderId]);
 
+  // Held outside this component, so walking to the order list and back does not empty it.
+  useEffect(() => pending.subscribe(orderId, setQueue), [orderId]);
+
   const reading = job?.kind === 'running';
 
   useEffect(() => {
@@ -89,13 +87,39 @@ export function OrderChat(props: {
        */
       if (options.alreadyShown !== true && jobs.isRunning(orderId)) {
         setText('');
-        setQueued({ question: trimmed, file });
-        await repo.say(orderId, MessageRole.USER, trimmed.length > 0 ? trimmed : 'How much is this?');
-        await repo.say(
-          orderId,
-          MessageRole.APP,
-          'I am still reading the receipt, so I do not have the costs yet. I will answer this as soon as it is done.',
-        );
+
+        // The photograph is written to the database now, while the page still holds it. A File
+        // is a handle to something this tab is keeping alive; leaving the screen would take
+        // the only copy of what the owner just photographed.
+        let photoId: number | null = null;
+        if (file !== undefined) {
+          const image = await readFile(file);
+          const stored = await repo.addPhoto({
+            orderId,
+            bytes: image.bytes,
+            mimeType: image.mimeType,
+            type: OrderImageType.PRODUCT_PHOTO,
+            isDeliveryPhoto: false,
+            createdAt: Date.now(),
+          });
+          photoId = stored.id;
+        }
+
+        const asked = trimmed.length > 0 ? trimmed : 'How much is this?';
+        // Written once, here, and never again: ask() is told later that it is already in the
+        // thread, so answering it does not make the question appear twice.
+        await repo.say(orderId, MessageRole.USER, asked, { photoId });
+        pending.add(orderId, asked, photoId);
+
+        // One notice for the wait, however many questions are asked during it. Repeating "I
+        // will answer this" after every question is noise, not reassurance.
+        if (pending.queue(orderId).length === 1) {
+          await repo.say(
+            orderId,
+            MessageRole.APP,
+            'I am still reading the receipt, so I do not have the costs yet. I will answer as soon as it is done.',
+          );
+        }
         await reload();
         return;
       }
@@ -131,18 +155,49 @@ export function OrderChat(props: {
     [repo, orderId, reload],
   );
 
+  /** Answers a question that is already written in the conversation, so it is not written again. */
+  const answerPending = useCallback(
+    async (item: PendingQuestion) => {
+      setBusy(true);
+      const release = updates.hold('blocking');
+      try {
+        const provider = await providerFor(repo);
+        const photo =
+          item.photoId === null
+            ? null
+            : await (async () => {
+                const stored = await repo.photo(item.photoId!);
+                return stored === null
+                  ? null
+                  : { id: stored.id, image: { bytes: stored.bytes, mimeType: stored.mimeType } };
+              })();
+
+        await ask(repo, provider, orderId, item.question, { photo, alreadyAsked: true });
+      } finally {
+        await reload();
+        setBusy(false);
+        release();
+      }
+    },
+    [repo, orderId, reload],
+  );
+
   /*
-   * Answers what was asked while the reading was going on.
+   * Answers what was asked while the reading was going on, oldest first, one at a time.
    *
-   * Only on success. If the receipt could not be read there are still no costs, and the
-   * honest thing is to leave the question unanswered and say so rather than guess at it.
+   * Only on success. A receipt that could not be read leaves the costs absent, and the honest
+   * thing is to leave those questions unanswered and let the owner retry - inventing a price
+   * because somebody asked for one is the one failure this app cannot afford.
    */
   useEffect(() => {
-    if (job?.kind !== 'done' || queued === null) return;
-    const pending = queued;
-    setQueued(null);
-    void send(pending.question, pending.file, { alreadyShown: true });
-  }, [job, queued, send]);
+    if (job?.kind !== 'done' || job.result.itemCount === 0) return;
+    if (busy || queue.length === 0) return;
+
+    const next = pending.takeNext(orderId);
+    if (next === null) return;
+    void answerPending(next);
+  }, [job, queue, busy, orderId, answerPending]);
+
 
   return (
     <div className="app">
@@ -175,7 +230,7 @@ export function OrderChat(props: {
             </div>
           )}
 
-          {job?.kind === 'done' && job.result.itemCount > 0 && (
+          {job?.kind === 'done' && job.result.outcome === 'complete' && (
             <div className="bubble reply status t-sub">
               Receipt read - {job.result.itemCount}{' '}
               {job.result.itemCount === 1 ? 'product' : 'products'} ready. Ask me what anything
@@ -183,7 +238,25 @@ export function OrderChat(props: {
             </div>
           )}
 
-          {job?.kind === 'failed' && (
+          {job?.kind === 'done' && job.result.outcome === 'partial' && (
+            // Deliberately not a tick. Some of the receipt was not read, so the products are
+            // usable but the total is not the order, and saying "done" here would be a lie
+            // that somebody prices against.
+            <div className="bubble reply status">
+              Only part of this receipt was read. The {job.result.itemCount} products below are
+              safe to use, but the total is not the whole order.
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                style={{ marginTop: 'var(--sp-3)' }}
+                onClick={() => jobs.start(repo, providerFor, orderId, { reprocess: true })}
+              >
+                Try reading the rest
+              </button>
+            </div>
+          )}
+
+          {job !== null && job.kind !== 'running' && (job.kind === 'failed' || job.result.outcome === 'empty') && (
             // The photographs and any approved prices are untouched, so this really is just a
             // matter of pressing it again.
             <div className="bubble reply status">
@@ -253,6 +326,22 @@ export function OrderChat(props: {
           </button>
         </div>
         {dictation.error !== null && <p className="notice warn">{dictation.error}</p>}
+
+        {job !== null && job.kind !== 'running' && job.result.timings.length > 0 && (
+          // Folded away, and durations only: no photograph, no prompt, no reply, no key,
+          // nothing off the receipt. It is here so a slow read can be described precisely
+          // instead of guessed at.
+          <details className="note">
+            <summary>How long the last reading took</summary>
+            <ul>
+              {job.result.timings.map((timing) => (
+                <li key={timing.phase}>
+                  {timing.phase}: {(timing.ms / 1000).toFixed(1)}s
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </main>
     </div>
   );

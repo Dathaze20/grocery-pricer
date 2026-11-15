@@ -701,3 +701,99 @@ describe('an unavailable model does not reach the shopkeeper', () => {
     expect(await repo.itemsFor(orderId)).toHaveLength(0);
   });
 });
+
+describe('telling a complete reading from an incomplete one', () => {
+  it('does not call an empty receipt a success', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    // The model answered, and found nothing on the page.
+    provider.queueExtraction({ supplier: 'JETRO', items: [], warnings: [] });
+
+    const result = await processOrder(repo, provider, orderId);
+
+    expect(result.ok).toBe(false);
+    expect(result.outcome).toBe('empty');
+    // A tick and a total of zero beside a receipt nobody read is worse than an error.
+    expect((await repo.order(orderId))!.status).not.toBe(OrderStatus.READY);
+    expect(await repo.itemsFor(orderId)).toHaveLength(0);
+    // And the photographs are still here to try again with.
+    expect(await repo.photosFor(orderId, false)).toHaveLength(1);
+    expect(result.summary.toLowerCase()).toContain('could not');
+  });
+
+  it('keeps the phase timings when extraction fails, which is when they matter most', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'timeout' });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(result.ok).toBe(false);
+    // The six-minute timeout is exactly the case we need durations for.
+    expect(result.timings.length).toBeGreaterThan(0);
+    expect(result.timings.map((t) => t.phase)).toContain('prepare-photos');
+    expect(result.timings.some((t) => t.phase.startsWith('extract-'))).toBe(true);
+  });
+
+  it('marks a half-read receipt as incomplete rather than ready', async () => {
+    const repo = await freshRepo();
+    const order = await repo.createOrder();
+    for (let i = 0; i < 4; i += 1) {
+      await repo.addPhoto({
+        orderId: order.id,
+        bytes: photoBytes(),
+        mimeType: 'image/jpeg',
+        type: OrderImageType.RECEIPT,
+        isDeliveryPhoto: false,
+        createdAt: Date.now() + i,
+      });
+    }
+
+    const provider = new FakeAiProvider();
+    // Four photographs is two groups: the first reads, the second does not come back.
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    provider.queueFailure({ kind: 'timeout' });
+
+    const result = await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
+
+    expect(result.outcome).toBe('partial');
+    expect(result.itemCount).toBe(1);
+    // The products that were read are kept - they are real - but the total is not the order.
+    expect(await repo.itemsFor(order.id)).toHaveLength(1);
+    expect(result.summary).toContain('not fully read');
+    expect(result.warnings.join(' ')).toContain('incomplete');
+  });
+
+  it('calls a fully read receipt complete', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+
+    const result = await processOrder(repo, provider, orderId);
+
+    expect(result.outcome).toBe('complete');
+    expect(result.summary).not.toContain('not fully read');
+  });
+
+  it('retrying a partial read replaces rather than duplicates, and keeps approved prices', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    await processOrder(repo, provider, orderId);
+
+    const first = (await repo.itemsFor(orderId))[0]!;
+    await repo.approvePrice(first.id, Money.of('6.25'));
+
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    const again = await processOrder(repo, provider, orderId, { reprocess: true });
+
+    expect(again.ok).toBe(true);
+    const rows = await repo.itemsFor(orderId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.approvedPrice).toBe(Money.of('6.25').toStorage());
+  });
+});

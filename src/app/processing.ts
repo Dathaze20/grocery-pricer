@@ -42,8 +42,18 @@ export interface PhaseTiming {
   readonly ms: number;
 }
 
+/**
+ * How completely the receipt was read.
+ *
+ * `ok` alone could not tell these apart, and two of them were being reported as success: a
+ * receipt that yielded no products at all, and one where some photographs were read and others
+ * were not. Both put a number on screen that the shop might act on.
+ */
+export type ProcessOutcome = 'complete' | 'partial' | 'empty' | 'failed';
+
 export interface ProcessResult {
   readonly ok: boolean;
+  readonly outcome: ProcessOutcome;
   readonly itemCount: number;
   readonly warnings: readonly string[];
   readonly error: AiError | null;
@@ -94,6 +104,7 @@ export async function processOrder(
       error: null,
       summary: 'That order is gone.',
       timings: [],
+      outcome: 'failed',
     };
   }
 
@@ -109,6 +120,7 @@ export async function processOrder(
       error: null,
       summary: 'That order has already been read. Open it to see the products and prices.',
       timings: [],
+      outcome: 'complete',
     };
   }
 
@@ -166,7 +178,10 @@ export async function processOrder(
   }
 
   const batches: AiOrderExtraction[] = [];
+  let batchesAttempted = 0;
+  let batchesFailed = 0;
   for (let i = 0; i < paperwork.length; i += PHOTOS_PER_BATCH) {
+    batchesAttempted += 1;
     const batch = paperwork.slice(i, i + PHOTOS_PER_BATCH);
     progress(`Reading photo ${i + 1} of ${paperwork.length}`);
     const result = await time(`extract-${i / PHOTOS_PER_BATCH + 1}`, () =>
@@ -178,6 +193,9 @@ export async function processOrder(
       if (isFatalForRun(result.error) || batches.length === 0) {
         // Nothing has been written yet, and nothing will be: the order keeps every product and
         // every approved price it had before this attempt.
+        // The timings go with it. This is the failure whose durations matter most - a shop
+        // watching one progress line for six minutes is precisely the case nobody could
+        // describe afterwards, because the evidence was dropped on the way out.
         return fail(
           repo,
           orderId,
@@ -185,8 +203,10 @@ export async function processOrder(
           aiErrorMessage(result.error),
           order.status,
           existing,
+          timings,
         );
       }
+      batchesFailed += 1;
       batches.push({ supplier: null, items: [], warnings: [aiErrorMessage(result.error)] });
       continue;
     }
@@ -196,6 +216,28 @@ export async function processOrder(
   const merged = mergeExtractions(batches);
   const validated = validateExtraction(merged, new Set(photos.map((p) => p.id)));
   progress('Working out costs');
+
+  /*
+   * Nothing read is not a success.
+   *
+   * An order with no products used to be saved and marked READY, which puts a tick beside a
+   * receipt that was never read - and a total of zero that somebody could believe. The
+   * photographs are untouched and the retry is one press, so say so instead.
+   */
+  if (validated.accepted.length === 0) {
+    return fail(
+      repo,
+      orderId,
+      null,
+      batchesFailed > 0
+        ? 'I could not read any products from those photos, and some of them did not come back at all. Try again - the photos are still here.'
+        : 'I could not find any products on those photos. Try again with the printed lines filling more of the frame.',
+      order.status,
+      existing,
+      timings,
+      'empty',
+    );
+  }
 
   const engine = new PricingEngine(rules);
   const rows: Array<Omit<StoredItem, 'id'>> = [];
@@ -233,7 +275,18 @@ export async function processOrder(
     }
   }
 
+  // Some photographs came back and some did not. The products that were read are worth
+  // keeping, but the total beside them is not the whole order and must not be shown as if it
+  // were: a shopkeeper pricing from a partial receipt is pricing from a number that is wrong.
+  const partial = batchesFailed > 0;
+  const outcome: ProcessOutcome = partial ? 'partial' : 'complete';
+
   const warnings = [
+    ...(partial
+      ? [
+          `This order is incomplete: ${batchesFailed} of ${batchesAttempted} groups of photos could not be read. The total below covers only what was read.`,
+        ]
+      : []),
     ...validated.warnings,
     ...validated.rejected.map((r) => `A line was dropped: ${describeIssue(r.reason)}`),
   ];
@@ -247,10 +300,10 @@ export async function processOrder(
     failureMessage: null,
   });
 
-  const summary = summarise(saved, orderTotal, warnings);
+  const summary = summarise(saved, orderTotal, warnings, partial);
   await repo.say(orderId, MessageRole.APP, summary);
 
-  return { ok: true, itemCount: saved.length, warnings, error: null, summary, timings };
+  return { ok: true, outcome, itemCount: saved.length, warnings, error: null, summary, timings };
 }
 
 /** Turns one validated row into a stored, costed, priced item. */
@@ -418,6 +471,7 @@ async function fail(
   previousStatus: OrderStatus = OrderStatus.FAILED,
   previousItems: readonly StoredItem[] = [],
   timings: readonly PhaseTiming[] = [],
+  outcome: ProcessOutcome = 'failed',
 ): Promise<ProcessResult> {
   const keptData = previousItems.length > 0;
   await repo.updateOrder(orderId, {
@@ -427,6 +481,7 @@ async function fail(
   await repo.say(orderId, MessageRole.APP, message);
   return {
     ok: false,
+    outcome,
     itemCount: previousItems.length,
     warnings: [],
     error,
@@ -435,13 +490,22 @@ async function fail(
   };
 }
 
-function summarise(items: readonly StoredItem[], total: Money, warnings: readonly string[]): string {
+function summarise(
+  items: readonly StoredItem[],
+  total: Money,
+  warnings: readonly string[],
+  partial = false,
+): string {
   if (items.length === 0) {
     return 'I could not read any products from those photos. Try again with a clearer picture.';
   }
   const needsReview = items.filter((i) => i.confidence !== ItemConfidence.HIGH).length;
   const lines = [
-    `${items.length} ${items.length === 1 ? 'product' : 'products'}, ${total.format()} wholesale.`,
+    // "so far" is doing real work in that sentence: it is the difference between a total the
+    // shop can price against and one that is missing lines nobody has mentioned.
+    partial
+      ? `${items.length} ${items.length === 1 ? 'product' : 'products'} so far, ${total.format()} - but this receipt is not fully read.`
+      : `${items.length} ${items.length === 1 ? 'product' : 'products'}, ${total.format()} wholesale.`,
   ];
   if (needsReview > 0) {
     lines.push(`${needsReview} ${needsReview === 1 ? 'needs' : 'need'} a second look.`);
