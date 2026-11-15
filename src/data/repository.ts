@@ -89,10 +89,43 @@ export class Repository {
       model,
       keyPrint: fingerprint(apiKey),
     });
+    // Gemini has just answered, so whatever went wrong before is no longer the current state.
+    await this.db.delete('settings', SettingKey.GEMINI_LAST_FAULT);
+  }
+
+  /**
+   * Records, in a few words, why the last attempt to read a receipt did not work.
+   *
+   * Short on purpose: this is for a status line, not a diagnosis. The failing screen already
+   * shows the full explanation, and a model name or an HTTP status has no business in Settings.
+   */
+  async recordAiFault(apiKey: string | null, summary: string): Promise<void> {
+    await this.putSetting(SettingKey.GEMINI_LAST_FAULT, {
+      summary,
+      keyPrint: fingerprint(apiKey),
+      at: Date.now(),
+    });
+  }
+
+  async lastAiFault(apiKey: string | null): Promise<string | null> {
+    const stored = await this.setting<{ summary: string; keyPrint: string }>(
+      SettingKey.GEMINI_LAST_FAULT,
+    );
+    if (stored === undefined || stored === null) return null;
+    // A fault recorded against a different key says nothing about the key in use now.
+    if (stored.keyPrint !== fingerprint(apiKey)) return null;
+    const trimmed = stored.summary?.trim();
+    return trimmed !== undefined && trimmed.length > 0 ? trimmed : null;
   }
 
   async forgetWorkingModel(): Promise<void> {
     await this.db.delete('settings', SettingKey.GEMINI_WORKING_MODEL);
+  }
+
+  /** Back to "not tested yet" - used when the key changes, so a stale verdict is not shown. */
+  async forgetAiHealth(): Promise<void> {
+    await this.db.delete('settings', SettingKey.GEMINI_WORKING_MODEL);
+    await this.db.delete('settings', SettingKey.GEMINI_LAST_FAULT);
   }
 
   async model(): Promise<string | null> {

@@ -33,6 +33,15 @@ export interface GeminiConfig {
   readonly models?: readonly string[];
   /** Told which model answered, so the next request can start with one that works. */
   readonly onModelWorked?: (model: string) => void;
+  /**
+   * Told when a model was refused for availability, so a remembered dead name can be dropped.
+   *
+   * Without this, a model that stops working keeps its place at the front of the chain for
+   * ever, spending one wasted call on every receipt from now on.
+   */
+  readonly onModelRejected?: (model: string) => void;
+  /** Told how the request ended, so Settings can say whether Gemini has actually answered. */
+  readonly onOutcome?: (error: AiError | null) => void;
   readonly fetchImpl?: typeof fetch;
   readonly timeoutMs?: number;
 }
@@ -95,19 +104,25 @@ export class GeminiClient {
 
       if (result.ok) {
         this.config.onModelWorked?.(model);
+        this.config.onOutcome?.(null);
         return result;
       }
 
       last = result.error;
       // Anything that is not about model availability is the final answer: trying a second
       // model would not change a spent quota, a bad key, or a request Google would not parse.
-      if (!anotherModelMightWork(result.error)) return result;
+      if (!anotherModelMightWork(result.error)) {
+        this.config.onOutcome?.(result.error);
+        return result;
+      }
+      this.config.onModelRejected?.(model);
     }
 
     // Every model was refused. Reporting the last one by name would invite the owner to go and
     // choose another, and there is nothing left to choose - so this says so once, plainly.
-    if (attempts > 1) return aiFail({ kind: 'noWorkingModel', tried: attempts });
-    return aiFail(last);
+    const error: AiError = attempts > 1 ? { kind: 'noWorkingModel', tried: attempts } : last;
+    this.config.onOutcome?.(error);
+    return aiFail(error);
   }
 
   private async attempt(

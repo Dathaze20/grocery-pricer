@@ -20,15 +20,21 @@
  *   - deep-research, antigravity, robotics, computer-use: agents, not readers.
  *   - *-preview and *-exp, because an experiment can be withdrawn mid-shift.
  *
- * Newest-capable first, then lighter and more widely available. `gemini-flash-latest` sits in
- * the middle as the alias that survives a rename: if every pinned name here were retired at
- * once, that one still resolves to whatever Flash currently is.
+ * Newest-capable first, then lighter, then `gemini-flash-latest` last as the alias that
+ * survives a rename: if both pinned names were retired at once, that one still resolves to
+ * whatever Flash currently is.
+ *
+ * Exactly as long as MAX_MODEL_ATTEMPTS, and a test holds the two together. A list longer than
+ * the attempt budget has entries that can never be reached, which reads like a safety net and
+ * is not one.
+ *
+ * Nothing from the 2.5 family is here, including 2.5-flash-lite. That generation is the one
+ * Google is withholding from newer keys, so it is a poor thing to fall back *to*.
  */
 export const APPROVED_GEMINI_MODELS: readonly string[] = [
   'gemini-3.8-flash',
   'gemini-3.5-flash-lite',
   'gemini-flash-latest',
-  'gemini-2.5-flash-lite',
 ];
 
 /**
@@ -76,27 +82,32 @@ export function listModelsUrl(): string {
 }
 
 /**
- * The order in which to try models for one request.
+ * The order in which to try models for one request, never longer than the attempt budget.
  *
- * A name the owner typed in Advanced goes first - a deliberate choice deserves to be honoured -
- * and the model that last worked for this key goes next, so the ordinary case is a single call
- * to a model already known to answer. The approved list follows as backup, which is what stops
- * a troubleshooting experiment from leaving the app unable to read anything at all.
+ * One preference goes first: a name typed in Advanced if there is one, otherwise the model
+ * that last worked for this key. That makes the ordinary case a single call to a model already
+ * known to answer.
+ *
+ * Only one, and that is the point of this function. Letting a stale override and a stale
+ * remembered model both take a slot would leave a single approved model to be tried, so two
+ * old names the owner has forgotten about could crowd out the list that is actually maintained.
+ * A preference that is itself an approved model costs nothing: it is simply moved to the front,
+ * and every approved model stays reachable.
  */
 export function modelChain(options: {
   override?: string | null;
   remembered?: string | null;
 }): readonly string[] {
-  const chain: string[] = [];
-  const add = (name: string | null | undefined): void => {
+  const clean = (name: string | null | undefined): string | null => {
     const trimmed = name?.trim();
-    if (trimmed !== undefined && trimmed.length > 0 && !chain.includes(trimmed)) chain.push(trimmed);
+    return trimmed !== undefined && trimmed.length > 0 ? trimmed : null;
   };
 
-  add(options.override);
-  add(options.remembered);
-  for (const name of APPROVED_GEMINI_MODELS) add(name);
-  return chain;
+  const preference = clean(options.override) ?? clean(options.remembered);
+  const rest = APPROVED_GEMINI_MODELS.filter((name) => name !== preference);
+  const chain = preference === null ? [...rest] : [preference, ...rest];
+
+  return chain.slice(0, MAX_MODEL_ATTEMPTS);
 }
 
 export function generateContentUrl(model: string): string {

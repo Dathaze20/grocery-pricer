@@ -69,25 +69,73 @@ describe('the approved list', () => {
 });
 
 describe('what the chain tries first', () => {
-  it('honours a name typed in Advanced, then what last worked, then the approved list', () => {
-    const chain = modelChain({ override: 'typed-by-hand', remembered: 'worked-last-time' });
-    expect(chain[0]).toBe('typed-by-hand');
-    expect(chain[1]).toBe('worked-last-time');
-    expect(chain[2]).toBe(APPROVED_GEMINI_MODELS[0]);
+  it('is exactly as long as the attempt budget, so no entry is unreachable', () => {
+    // The bug this replaced: four approved models and three attempts meant the fourth could
+    // never be tried, which reads like a safety net and is not one.
+    expect(APPROVED_GEMINI_MODELS).toHaveLength(MAX_MODEL_ATTEMPTS);
   });
 
-  it('starts from the remembered model when nothing was typed', () => {
-    expect(modelChain({ remembered: 'worked-last-time' })[0]).toBe('worked-last-time');
-  });
-
-  it('never lists the same model twice', () => {
-    const chain = modelChain({ override: DEFAULT_GEMINI_MODEL, remembered: DEFAULT_GEMINI_MODEL });
-    expect(chain.filter((m) => m === DEFAULT_GEMINI_MODEL)).toHaveLength(1);
-    expect(new Set(chain).size).toBe(chain.length);
-  });
-
-  it('works with nothing stored at all', () => {
+  it('a fresh installation tries the approved list, in order, and nothing else', () => {
     expect(modelChain({})).toEqual(APPROVED_GEMINI_MODELS);
+    expect(modelChain({ override: null, remembered: null })).toEqual(APPROVED_GEMINI_MODELS);
+    expect(modelChain({ override: '  ', remembered: '' })).toEqual(APPROVED_GEMINI_MODELS);
+  });
+
+  it('a model that worked before is tried first, and the rest stay reachable', () => {
+    const second = APPROVED_GEMINI_MODELS[1]!;
+    const chain = modelChain({ remembered: second });
+
+    expect(chain[0]).toBe(second);
+    expect(chain).toHaveLength(MAX_MODEL_ATTEMPTS);
+    // Moved to the front, not added to the front: every approved model is still in the chain.
+    expect([...chain].sort()).toEqual([...APPROVED_GEMINI_MODELS].sort());
+  });
+
+  it('a remembered model that is no longer approved costs one slot, never the whole list', () => {
+    const chain = modelChain({ remembered: 'retired-last-month' });
+
+    expect(chain[0]).toBe('retired-last-month');
+    expect(chain).toHaveLength(MAX_MODEL_ATTEMPTS);
+    // Two maintained models are still tried after it.
+    expect(chain.slice(1)).toEqual(APPROVED_GEMINI_MODELS.slice(0, MAX_MODEL_ATTEMPTS - 1));
+  });
+
+  it('an old manual override does not crowd the approved list out with a stale memory', () => {
+    // Both set, both stale. Allowing a slot each would leave a single approved model to try,
+    // so two names the owner has long forgotten could decide the whole attempt budget.
+    const chain = modelChain({ override: 'typed-long-ago', remembered: 'also-stale' });
+
+    expect(chain[0]).toBe('typed-long-ago');
+    expect(chain).not.toContain('also-stale');
+    expect(chain.slice(1)).toEqual(APPROVED_GEMINI_MODELS.slice(0, MAX_MODEL_ATTEMPTS - 1));
+    expect(chain).toHaveLength(MAX_MODEL_ATTEMPTS);
+  });
+
+  it('never lists the same model twice, and never exceeds the budget', () => {
+    const cases = [
+      { override: DEFAULT_GEMINI_MODEL, remembered: DEFAULT_GEMINI_MODEL },
+      { override: 'x', remembered: 'x' },
+      { remembered: APPROVED_GEMINI_MODELS[2] },
+      { override: APPROVED_GEMINI_MODELS[1], remembered: 'y' },
+      {},
+    ];
+
+    for (const options of cases) {
+      const chain = modelChain(options);
+      expect(new Set(chain).size, JSON.stringify(options)).toBe(chain.length);
+      expect(chain.length, JSON.stringify(options)).toBeLessThanOrEqual(MAX_MODEL_ATTEMPTS);
+      expect(chain.length, JSON.stringify(options)).toBeGreaterThan(0);
+    }
+  });
+
+  it('always ends up trying something from the maintained list', () => {
+    for (const options of [{}, { remembered: 'dead' }, { override: 'dead', remembered: 'also' }]) {
+      const chain = modelChain(options);
+      const approved = chain.filter((m) => APPROVED_GEMINI_MODELS.includes(m));
+      expect(approved.length, JSON.stringify(options)).toBeGreaterThanOrEqual(
+        MAX_MODEL_ATTEMPTS - 1,
+      );
+    }
   });
 });
 
@@ -254,5 +302,104 @@ describe('not falling back for problems a different model cannot fix', () => {
 
     for (const error of availability) expect(anotherModelMightWork(error), error.kind).toBe(true);
     for (const error of everythingElse) expect(anotherModelMightWork(error), error.kind).toBe(false);
+  });
+});
+
+describe('working through the chain for real', () => {
+  it('reaches the last approved model and succeeds there', async () => {
+    const chain = modelChain({});
+    const lastOne = chain[chain.length - 1]!;
+    const { asked, fetchImpl } = recordingFetch((model) =>
+      model === lastOne ? ok() : notFound(model),
+    );
+    const worked: string[] = [];
+
+    const result = await new GeminiClient({
+      apiKey: 'AIza-test-key',
+      models: chain,
+      onModelWorked: (m) => worked.push(m),
+      fetchImpl,
+    }).generate({ system: 's', prompt: 'p' });
+
+    // The final entry is genuinely reachable - it is not decoration.
+    expect(result.ok).toBe(true);
+    expect(asked).toEqual([...chain]);
+    expect(worked).toEqual([lastOne]);
+  });
+
+  it('a fresh installation needs one call when the first model answers', async () => {
+    const { asked, fetchImpl } = recordingFetch(() => ok());
+
+    const result = await new GeminiClient({
+      apiKey: 'AIza-test-key',
+      models: modelChain({}),
+      fetchImpl,
+    }).generate({ system: 's', prompt: 'p' });
+
+    expect(result.ok).toBe(true);
+    // No wasted calls on a healthy install.
+    expect(asked).toEqual([DEFAULT_GEMINI_MODEL]);
+  });
+
+  it('a remembered model that answers costs one call, not a walk down the list', async () => {
+    const remembered = APPROVED_GEMINI_MODELS[2]!;
+    const { asked, fetchImpl } = recordingFetch(() => ok());
+
+    await new GeminiClient({
+      apiKey: 'AIza-test-key',
+      models: modelChain({ remembered }),
+      fetchImpl,
+    }).generate({ system: 's', prompt: 'p' });
+
+    expect(asked).toEqual([remembered]);
+  });
+
+  it('says a dead remembered model should be forgotten, so it is tried once and not again', async () => {
+    const { fetchImpl } = recordingFetch((model) => (model === 'dead-name' ? notFound(model) : ok()));
+    const rejected: string[] = [];
+
+    await new GeminiClient({
+      apiKey: 'AIza-test-key',
+      models: modelChain({ remembered: 'dead-name' }),
+      onModelRejected: (m) => rejected.push(m),
+      fetchImpl,
+    }).generate({ system: 's', prompt: 'p' });
+
+    expect(rejected).toContain('dead-name');
+  });
+
+  it('every approved model returning 404 gives one plain answer', async () => {
+    const chain = modelChain({});
+    const { asked, fetchImpl } = recordingFetch((model) => notFound(model));
+    const outcomes: Array<AiError | null> = [];
+
+    const result = await new GeminiClient({
+      apiKey: 'AIza-test-key',
+      models: chain,
+      onOutcome: (e) => outcomes.push(e),
+      fetchImpl,
+    }).generate({ system: 's', prompt: 'p' });
+
+    expect(asked).toHaveLength(MAX_MODEL_ATTEMPTS);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('noWorkingModel');
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]?.kind).toBe('noWorkingModel');
+  });
+
+  it('reports the outcome exactly once, success or failure', async () => {
+    const outcomes: Array<AiError | null> = [];
+    const { fetchImpl } = recordingFetch((model) => (model === 'first' ? notFound(model) : ok()));
+
+    await new GeminiClient({
+      apiKey: 'AIza-test-key',
+      models: ['first', 'second'],
+      onOutcome: (e) => outcomes.push(e),
+      fetchImpl,
+    }).generate({ system: 's', prompt: 'p' });
+
+    // One request, one verdict - a model refused along the way is not a failed request.
+    expect(outcomes).toEqual([null]);
   });
 });

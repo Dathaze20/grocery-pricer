@@ -31,7 +31,8 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   const [checking, setChecking] = useState(false);
   const [available, setAvailable] = useState<readonly AvailableModel[] | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
-  const [working, setWorking] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [fault, setFault] = useState<string | null>(null);
   // True once the user has touched a field. Reading the stored values takes a moment on a cold
   // database, and someone who pastes their key in that moment must not have it wiped from under
   // them - which looks exactly like the app losing the key they just pasted.
@@ -45,7 +46,8 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
       if (!edited.current) setKey(stored ?? '');
     });
     void repo.apiKey().then((stored) => {
-      void repo.workingModel(stored).then(setWorking);
+      void repo.workingModel(stored).then((model) => setConfirmed(model !== null));
+      void repo.lastAiFault(stored).then(setFault);
     });
     void repo.model().then((stored) => {
       if (!edited.current) setModel(stored ?? '');
@@ -74,6 +76,18 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
     const hadKey = key.trim().length > 0;
     if (hadKey) await repo.setApiKey(key);
     await repo.setModel(model);
+
+    // The verdict is stored against the key it was reached with, so saving a different key
+    // leaves these empty and the line goes back to "not tested yet" rather than keeping a
+    // claim that belongs to the previous key.
+    const stored = await repo.apiKey();
+    const [workingNow, faultNow] = await Promise.all([
+      repo.workingModel(stored),
+      repo.lastAiFault(stored),
+    ]);
+    setConfirmed(workingNow !== null);
+    setFault(faultNow);
+
     setSaved(true);
     setDirty(false);
     setToast(hadKey ? 'Key saved' : 'Model saved');
@@ -85,16 +99,23 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   /**
    * What the owner is told, in one line.
    *
-   * Never a model name unless they went looking for one. "Which Gemini model" is not a
-   * question a deli owner should have to hold an opinion about, and the honest status is
-   * simply whether receipts can be read right now.
+   * Three states, kept apart on purpose. A saved key is not a working one - that was the whole
+   * shape of the bug this app has just been through, where everything looked set up and
+   * nothing could read a receipt - so "AI ready" is claimed only once Gemini has actually
+   * answered. Never a model name: "which Gemini model" is not a question a deli owner should
+   * have to hold an opinion about, and Advanced is there for anyone who does.
    */
-  const status =
-    saved || key.trim().length > 0
-      ? working !== null
-        ? 'AI ready. Grocery Pricer chooses the model for you.'
-        : 'AI ready. The first receipt will settle on a model automatically.'
-      : 'Add your Gemini key above to start reading receipts.';
+  const status: { tone: 'ok' | 'warn' | 'plain'; text: string } =
+    key.trim().length === 0 && !saved
+      ? { tone: 'plain', text: 'Add your Gemini key above to start reading receipts.' }
+      : fault !== null
+        ? { tone: 'warn', text: `Last attempt did not work. ${fault}` }
+        : confirmed
+          ? { tone: 'ok', text: 'AI ready. Gemini has read a receipt with this key.' }
+          : {
+              tone: 'plain',
+              text: 'Key saved, not tested yet. Photograph a receipt and press Process order.',
+            };
 
   const touch = useCallback(() => {
     edited.current = true;
@@ -130,8 +151,11 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
           </div>
 
           <div>
-            <p className="t-cap" style={{ marginTop: 0, marginBottom: 0 }}>
-              {status}
+            <p
+              className={status.tone === 'warn' ? 'notice warn' : 't-cap'}
+              style={{ marginTop: 0, marginBottom: 0 }}
+            >
+              {status.tone === 'ok' && <CheckIcon size={16} />} {status.text}
             </p>
           </div>
         </div>
