@@ -247,7 +247,7 @@ describe('photographing merchandise after the receipt is processed', () => {
 
     const answer = await ask(repo, provider, orderId, 'how much is this', { photo: PHOTO });
 
-    expect(answer.text).toContain('will not charge you');
+    expect(answer.text).toContain('never turns on billing');
     expect(answer.text).not.toMatch(/\$\d/);
   });
 });

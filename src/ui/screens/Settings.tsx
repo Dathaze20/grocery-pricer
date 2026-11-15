@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { GEMINI_API_KEY_URL, SUGGESTED_GEMINI_MODELS, configuredModel } from '../../ai/model';
+import { GEMINI_API_KEY_URL } from '../../ai/model';
 import { listModels, type AvailableModel } from '../../ai/gemini';
 import { aiErrorMessage } from '../../core/ai-types';
 import type { Repository } from '../../data/repository';
@@ -31,6 +31,8 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   const [checking, setChecking] = useState(false);
   const [available, setAvailable] = useState<readonly AvailableModel[] | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [fault, setFault] = useState<string | null>(null);
   // True once the user has touched a field. Reading the stored values takes a moment on a cold
   // database, and someone who pastes their key in that moment must not have it wiped from under
   // them - which looks exactly like the app losing the key they just pasted.
@@ -42,6 +44,10 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   useEffect(() => {
     void repo.apiKey().then((stored) => {
       if (!edited.current) setKey(stored ?? '');
+    });
+    void repo.apiKey().then((stored) => {
+      void repo.workingModel(stored).then((model) => setConfirmed(model !== null));
+      void repo.lastAiFault(stored).then(setFault);
     });
     void repo.model().then((stored) => {
       if (!edited.current) setModel(stored ?? '');
@@ -70,6 +76,18 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
     const hadKey = key.trim().length > 0;
     if (hadKey) await repo.setApiKey(key);
     await repo.setModel(model);
+
+    // The verdict is stored against the key it was reached with, so saving a different key
+    // leaves these empty and the line goes back to "not tested yet" rather than keeping a
+    // claim that belongs to the previous key.
+    const stored = await repo.apiKey();
+    const [workingNow, faultNow] = await Promise.all([
+      repo.workingModel(stored),
+      repo.lastAiFault(stored),
+    ]);
+    setConfirmed(workingNow !== null);
+    setFault(faultNow);
+
     setSaved(true);
     setDirty(false);
     setToast(hadKey ? 'Key saved' : 'Model saved');
@@ -77,6 +95,27 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
     // Cleared so the same message can be shown again on the next save.
     setTimeout(() => setToast(null), 100);
   }, [repo, key, model]);
+
+  /**
+   * What the owner is told, in one line.
+   *
+   * Three states, kept apart on purpose. A saved key is not a working one - that was the whole
+   * shape of the bug this app has just been through, where everything looked set up and
+   * nothing could read a receipt - so "AI ready" is claimed only once Gemini has actually
+   * answered. Never a model name: "which Gemini model" is not a question a deli owner should
+   * have to hold an opinion about, and Advanced is there for anyone who does.
+   */
+  const status: { tone: 'ok' | 'warn' | 'plain'; text: string } =
+    key.trim().length === 0 && !saved
+      ? { tone: 'plain', text: 'Add your Gemini key above to start reading receipts.' }
+      : fault !== null
+        ? { tone: 'warn', text: `Last attempt did not work. ${fault}` }
+        : confirmed
+          ? { tone: 'ok', text: 'AI ready. Gemini has read a receipt with this key.' }
+          : {
+              tone: 'plain',
+              text: 'Key saved, not tested yet. Photograph a receipt and press Process order.',
+            };
 
   const touch = useCallback(() => {
     edited.current = true;
@@ -112,71 +151,12 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
           </div>
 
           <div>
-            <label htmlFor="model">Model</label>
-            <input
-              id="model"
-              type="text"
-              value={model}
-              spellCheck={false}
-              placeholder="Default"
-              onChange={(event) => {
-                touch();
-                setModel(event.target.value);
-              }}
-            />
-            <p className="t-cap" style={{ marginTop: 'var(--sp-2)' }}>
-              Reading your receipts with <strong>{configuredModel(model)}</strong>. Leave empty for
-              the default; if Google ever retires it, try{' '}
-              {SUGGESTED_GEMINI_MODELS.find((name) => name !== configuredModel(model))}.
-            </p>
-
-            <button
-              type="button"
-              className="btn btn-secondary btn-block"
-              style={{ marginTop: 'var(--sp-3)' }}
-              disabled={checking}
-              onClick={() => void checkModels()}
+            <p
+              className={status.tone === 'warn' ? 'notice warn' : 't-cap'}
+              style={{ marginTop: 0, marginBottom: 0 }}
             >
-              {checking ? 'Asking Google...' : 'List the models Google advertises for my key'}
-            </button>
-
-            {checkError !== null && <p className="notice warn">{checkError}</p>}
-
-            {available !== null &&
-              (available.length === 0 ? (
-                <p className="notice warn">
-                  Your key reached Google, but Google advertised no model that can read
-                  photographs. That points at the Google project the key belongs to rather than at
-                  this app.
-                </p>
-              ) : (
-                <div className="stack" style={{ marginTop: 'var(--sp-3)' }}>
-                  <p className="t-cap">
-                    Google advertises these models to your key. Being listed is not a promise
-                    that one will work - a model can be listed and still refuse the request - so
-                    if the first choice fails, come back and try another. Tap one, then Save.
-                  </p>
-                  {available.map((candidate) => (
-                    <button
-                      key={candidate.id}
-                      type="button"
-                      className="row-button bare"
-                      onClick={() => {
-                        touch();
-                        setModel(candidate.id);
-                        setToast(`Model set to ${candidate.id} - press Save to keep it`);
-                      }}
-                    >
-                      <span className="grow stack" style={{ gap: 2 }}>
-                        <span className="name">{candidate.id}</span>
-                        {candidate.label !== candidate.id && (
-                          <span className="t-cap">{candidate.label}</span>
-                        )}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ))}
+              {status.tone === 'ok' && <CheckIcon size={16} />} {status.text}
+            </p>
           </div>
         </div>
 
@@ -197,6 +177,80 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
             and how much you use it. A key on a project with no billing stops at the free
             allowance instead of charging you. Check your usage in Google AI Studio.
           </p>
+        </details>
+
+        <details className="note">
+          <summary>Advanced: choose the model yourself</summary>
+          <p>
+            Grocery Pricer picks a model on its own and moves to another if Google stops
+            offering one, so there is normally nothing to do here. This is for working out why
+            reading a receipt is failing.
+          </p>
+
+          <label htmlFor="model">Model</label>
+          <input
+            id="model"
+            type="text"
+            value={model}
+            spellCheck={false}
+            placeholder="Automatic"
+            onChange={(event) => {
+              touch();
+              setModel(event.target.value);
+            }}
+          />
+          <p className="t-cap" style={{ marginTop: 'var(--sp-2)' }}>
+            Leave empty to let the app choose. A name typed here is tried first, and the app
+            still falls back if Google refuses it.
+          </p>
+
+          <button
+            type="button"
+            className="btn btn-secondary btn-block"
+            style={{ marginTop: 'var(--sp-3)' }}
+            disabled={checking}
+            onClick={() => void checkModels()}
+          >
+            {checking ? 'Asking Google...' : 'List the models Google advertises for my key'}
+          </button>
+
+          {checkError !== null && <p className="notice warn">{checkError}</p>}
+
+          {available !== null &&
+            (available.length === 0 ? (
+              <p className="notice warn">
+                Your key reached Google, but Google advertised no model that can read
+                photographs. That points at the Google project the key belongs to rather than
+                at this app.
+              </p>
+            ) : (
+              <div className="stack" style={{ marginTop: 'var(--sp-3)' }}>
+                <p className="t-cap">
+                  Google advertises these to your key. Being listed is not a promise that one
+                  will work - gemini-2.5-flash is listed for most keys and refuses the request.
+                  Tap one, then Save.
+                </p>
+                {available.map((candidate) => (
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    className="row-button bare"
+                    onClick={() => {
+                      touch();
+                      setModel(candidate.id);
+                      setToast(`Model set to ${candidate.id} - press Save to keep it`);
+                    }}
+                  >
+                    <span className="grow stack" style={{ gap: 2 }}>
+                      <span className="name">{candidate.id}</span>
+                      {candidate.label !== candidate.id && (
+                        <span className="t-cap">{candidate.label}</span>
+                      )}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ))}
         </details>
 
         <details className="note">

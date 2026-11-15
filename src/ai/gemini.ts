@@ -1,6 +1,6 @@
 import type { AiError, AiResult } from '../core/ai-types';
 import { aiFail, aiOk } from '../core/ai-types';
-import { configuredModel, generateContentUrl, listModelsUrl } from './model';
+import { MAX_MODEL_ATTEMPTS, configuredModel, generateContentUrl, listModelsUrl } from './model';
 
 /** One photograph on its way to Gemini: base64 payload plus its mime type. */
 export interface ImagePart {
@@ -23,8 +23,41 @@ export interface GeminiConfig {
   /** The user's own key. Read from device storage at call time and never stored here. */
   readonly apiKey: string | null;
   readonly model?: string | null;
+  /**
+   * Models to try, best first, when no single model is pinned.
+   *
+   * The shopkeeper never sees this. It exists so that a model being retired - which Google can
+   * do to a name that its own model list still advertises - costs them a few seconds rather
+   * than an afternoon of reading model names.
+   */
+  readonly models?: readonly string[];
+  /** Told which model answered, so the next request can start with one that works. */
+  readonly onModelWorked?: (model: string) => void;
+  /**
+   * Told when a model was refused for availability, so a remembered dead name can be dropped.
+   *
+   * Without this, a model that stops working keeps its place at the front of the chain for
+   * ever, spending one wasted call on every receipt from now on.
+   */
+  readonly onModelRejected?: (model: string) => void;
+  /** Told how the request ended, so Settings can say whether Gemini has actually answered. */
+  readonly onOutcome?: (error: AiError | null) => void;
   readonly fetchImpl?: typeof fetch;
   readonly timeoutMs?: number;
+}
+
+/**
+ * Whether trying a different model could possibly help.
+ *
+ * This is the whole discipline of the fallback. A 404 means this key may not call this model,
+ * and a 403 that is not about the key means much the same - another model may well work. Every
+ * other failure is about something else entirely: a spent allowance, a rejected key, a
+ * malformed request, a dropped connection. Walking the model list for those would spend the
+ * owner's quota several times over to arrive at the same answer, and would blame the model for
+ * a problem it did not cause.
+ */
+export function anotherModelMightWork(error: AiError): boolean {
+  return error.kind === 'modelUnavailable' || error.kind === 'accessDenied';
 }
 
 export const DEFAULT_TIMEOUT_MS = 90_000;
@@ -43,11 +76,60 @@ export class GeminiClient {
     return configuredModel(this.config.model);
   }
 
+  /**
+   * Runs one request, trying the next model only when the model itself was the problem.
+   *
+   * Bounded by MAX_MODEL_ATTEMPTS, and the loop cannot spin: each pass takes the next entry of
+   * a fixed list and stops at its end. The first model that answers is reported back so the
+   * next request starts there instead of walking the list again.
+   */
   async generate(request: GeminiRequest): Promise<AiResult<string>> {
     const key = this.config.apiKey?.trim();
     if (key === undefined || key.length === 0) return aiFail({ kind: 'missingKey' });
 
-    const model = configuredModel(request.model ?? this.config.model);
+    const pinned = request.model?.trim();
+    const candidates =
+      pinned !== undefined && pinned.length > 0
+        ? [pinned]
+        : (this.config.models ?? []).length > 0
+          ? [...(this.config.models ?? [])]
+          : [configuredModel(this.config.model)];
+
+    const attempts = Math.min(candidates.length, MAX_MODEL_ATTEMPTS);
+    let last: AiError = { kind: 'unknown' };
+
+    for (let i = 0; i < attempts; i += 1) {
+      const model = candidates[i]!;
+      const result = await this.attempt(key, model, request);
+
+      if (result.ok) {
+        this.config.onModelWorked?.(model);
+        this.config.onOutcome?.(null);
+        return result;
+      }
+
+      last = result.error;
+      // Anything that is not about model availability is the final answer: trying a second
+      // model would not change a spent quota, a bad key, or a request Google would not parse.
+      if (!anotherModelMightWork(result.error)) {
+        this.config.onOutcome?.(result.error);
+        return result;
+      }
+      this.config.onModelRejected?.(model);
+    }
+
+    // Every model was refused. Reporting the last one by name would invite the owner to go and
+    // choose another, and there is nothing left to choose - so this says so once, plainly.
+    const error: AiError = attempts > 1 ? { kind: 'noWorkingModel', tried: attempts } : last;
+    this.config.onOutcome?.(error);
+    return aiFail(error);
+  }
+
+  private async attempt(
+    key: string,
+    model: string,
+    request: GeminiRequest,
+  ): Promise<AiResult<string>> {
     const body = {
       systemInstruction: { parts: [{ text: request.system }] },
       contents: [

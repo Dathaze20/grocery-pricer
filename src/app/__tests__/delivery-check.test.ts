@@ -195,7 +195,7 @@ describe('checkDelivery', () => {
 
     expect(result.ok).toBe(false);
     expect(result.reconciliation).toBeNull();
-    expect(result.summary).toContain('will not charge you');
+    expect(result.summary).toContain('never turns on billing');
     expect(await repo.deliveryChecksFor(orderId)).toHaveLength(0);
   });
 

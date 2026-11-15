@@ -105,7 +105,7 @@ describe('what a failure is turned into', () => {
 
     expect(error.kind).toBe('quotaExhausted');
     expect(aiErrorMessage(error)).toBe(
-      'Free Gemini quota reached. Grocery Pricer will not charge you. Try again after the quota resets.',
+      'Gemini quota reached for now. Grocery Pricer never turns on billing and never picks a paid model - what your Google project charges, if anything, is set in that project. Try again after the allowance resets.',
     );
     // Retrying a spent allowance only spends the next one, so this must not read as transient.
     expect(isTransient(error)).toBe(false);
