@@ -133,6 +133,8 @@ export type AiError =
   | { kind: 'truncated' }
   /** HTTP 404: the key reached Google, but this model is not one it may call. */
   | { kind: 'modelUnavailable'; model: string; status: number; detail?: string | null }
+  /** Every model the app is willing to choose was refused. One answer, not a list. */
+  | { kind: 'noWorkingModel'; tried: number }
   /** HTTP 400 that is not about the key: the request itself was refused. */
   | { kind: 'badRequest'; status: number; detail?: string | null }
   /** HTTP 403 that is not about the key: the project or model is restricted. */
@@ -165,6 +167,7 @@ export function isFatalForRun(error: AiError): boolean {
     // A model the key cannot call, or a project that is refused, is refused for every photo.
     // Trying the remaining batches only spends time and makes the same report arrive late.
     error.kind === 'modelUnavailable' ||
+    error.kind === 'noWorkingModel' ||
     error.kind === 'accessDenied'
   );
 }
@@ -197,7 +200,10 @@ export function aiErrorMessage(error: AiError): string {
       return 'That API key was rejected. Check it in Settings under AI setup.';
     case 'quotaExhausted':
       // The exact sentence the brief asks for: nobody gets billed by surprise.
-      return 'Free Gemini quota reached. Grocery Pricer will not charge you. Try again after the quota resets.';
+      // Carefully worded. What this app does is knowable and is stated; what Google bills is
+      // a property of the owner's own project, and promising "you will not be charged" would
+      // be a guarantee about somebody else's account that nothing here can actually make.
+      return 'Gemini quota reached for now. Grocery Pricer never turns on billing and never picks a paid model - what your Google project charges, if anything, is set in that project. Try again after the allowance resets.';
     case 'rateLimited':
       return 'Gemini is rate limiting requests right now. Try again in a moment.';
     case 'overloaded':
@@ -216,6 +222,11 @@ export function aiErrorMessage(error: AiError): string {
       // The single most useful sentence this app can print: it names the model, says the key
       // itself was accepted, and points at the one setting that fixes it.
       return `Gemini does not offer "${error.model}" to this API key (HTTP 404). The key reached Google, so the key itself is fine. Open Settings and choose a different model - "List the models Google advertises for my key" shows what to try.`;
+    case 'noWorkingModel':
+      // Deliberately names no model. Reaching here means the owner cannot fix this by picking
+      // from a list - every model this app would pick has already been refused - so the one
+      // useful thing to say is where the problem actually lives.
+      return 'Gemini would not read the receipt with any of the models Grocery Pricer can use. This is usually the Google project the key belongs to rather than the app. Try a new key from Google AI Studio, or try again later.';
     case 'accessDenied':
       return `Google refused this request (HTTP 403)${withDetail(error.detail)} The key was recognised, so this is the Google project's access to the model rather than the key itself.`;
     case 'badRequest':

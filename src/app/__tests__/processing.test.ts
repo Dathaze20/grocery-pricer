@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeAiProvider } from '../../ai/fake';
+import { GeminiProvider } from '../../ai/provider';
 import { Money } from '../../core/money';
 import { ItemConfidence } from '../../core/models';
 import { PricingSource } from '../../core/pricing';
@@ -206,7 +207,7 @@ describe('processOrder', () => {
     expect((await repo.order(orderId))!.supplier).toBe('JETRO');
   });
 
-  it('stops the run when the free quota is gone, and says nothing will be charged', async () => {
+  it('stops the run when the free quota is gone, without promising what Google bills', async () => {
     const { orderId } = await orderWithPhoto(repo);
     const provider = new FakeAiProvider().queueFailure({ kind: 'quotaExhausted' });
 
@@ -215,7 +216,7 @@ describe('processOrder', () => {
     expect(result.ok).toBe(false);
     expect(result.error?.kind).toBe('quotaExhausted');
     expect(result.summary).toBe(
-      'Free Gemini quota reached. Grocery Pricer will not charge you. Try again after the quota resets.',
+      'Gemini quota reached for now. Grocery Pricer never turns on billing and never picks a paid model - what your Google project charges, if anything, is set in that project. Try again after the allowance resets.',
     );
     const order = await repo.order(orderId);
     expect(order!.status).toBe(OrderStatus.FAILED);
@@ -530,5 +531,138 @@ describe('retrying an order', () => {
     provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
     expect((await processOrder(repo, provider, orderId)).ok).toBe(true);
     expect(await repo.itemsFor(orderId)).toHaveLength(1);
+  });
+});
+
+describe('an unavailable model does not reach the shopkeeper', () => {
+  /** A receipt as Gemini would return it, for the whole pipeline to run on. */
+  function geminiReply(): Response {
+    return new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: JSON.stringify({
+                    supplier: 'JETRO',
+                    items: [
+                      {
+                        rawName: 'HELLM MAYONNAISE 8Z',
+                        canonicalName: "Hellmann's Mayonnaise",
+                        casePrice: '24.00',
+                        unitsPerCase: 6,
+                        casesPurchased: 1,
+                        sourcePhotoIds: [1],
+                        sourceText: ['HELLM MAYONNAISE 8Z 24.00'],
+                        confidence: 0.9,
+                      },
+                    ],
+                    warnings: [],
+                  }),
+                },
+              ],
+            },
+            finishReason: 'STOP',
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  }
+
+  function refused(model: string): Response {
+    return new Response(
+      JSON.stringify({
+        error: { code: 404, status: 'NOT_FOUND', message: `models/${model} is not found` },
+      }),
+      { status: 404 },
+    );
+  }
+
+  it('falls back to a working model and prices the order, once', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+
+    const asked: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const model = decodeURIComponent(/models\/([^:]+):/.exec(String(url))?.[1] ?? '');
+      asked.push(model);
+      // The real failure: the first choice is refused outright by Google.
+      return model === 'retired-primary' ? refused(model) : geminiReply();
+    });
+
+    const worked: string[] = [];
+    const provider = new GeminiProvider({
+      apiKey: 'AIza-test-key',
+      models: ['retired-primary', 'working-model'],
+      onModelWorked: (m) => worked.push(m),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const result = await processOrder(repo, provider, orderId);
+
+    // The shopkeeper gets their products. They are never told a model name.
+    expect(result.ok).toBe(true);
+    expect(result.summary).not.toContain('retired-primary');
+    expect(result.summary).not.toContain('404');
+
+    const items = await repo.itemsFor(orderId);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.displayName).toBeTruthy();
+
+    expect(asked).toContain('retired-primary');
+    expect(worked).toEqual(['working-model']);
+    expect((await repo.order(orderId))!.status).toBe(OrderStatus.READY);
+    // Nothing was lost on the way through, either.
+    expect(await repo.photosFor(orderId, false)).toHaveLength(1);
+  });
+
+  it('does not duplicate rows when the fallback happens on a re-read', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const model = decodeURIComponent(/models\/([^:]+):/.exec(String(url))?.[1] ?? '');
+      return model === 'retired-primary' ? refused(model) : geminiReply();
+    });
+    const provider = new GeminiProvider({
+      apiKey: 'AIza-test-key',
+      models: ['retired-primary', 'working-model'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await processOrder(repo, provider, orderId);
+    const first = await repo.itemsFor(orderId);
+    expect(first).toHaveLength(1);
+
+    await processOrder(repo, provider, orderId, { reprocess: true });
+    const second = await repo.itemsFor(orderId);
+    expect(second).toHaveLength(1);
+    expect(second[0]!.id).not.toBe(first[0]!.id);
+  });
+
+  it('keeps the order intact when every model is refused', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+
+    const fetchImpl = vi.fn(async (url: string | URL | Request) =>
+      refused(decodeURIComponent(/models\/([^:]+):/.exec(String(url))?.[1] ?? '')),
+    );
+    const provider = new GeminiProvider({
+      apiKey: 'AIza-test-key',
+      models: ['one', 'two', 'three'],
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const result = await processOrder(repo, provider, orderId);
+
+    expect(result.ok).toBe(false);
+    // One explanation, with no model names and nothing to choose between.
+    expect(result.summary).toContain('Google project');
+    expect(result.summary).not.toContain('one');
+    expect(result.summary).not.toContain('HTTP');
+    expect(await repo.photosFor(orderId, false)).toHaveLength(1);
+    expect(await repo.itemsFor(orderId)).toHaveLength(0);
   });
 });

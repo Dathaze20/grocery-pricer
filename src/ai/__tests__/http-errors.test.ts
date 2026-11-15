@@ -17,9 +17,9 @@ function clientReturning(response: Response): { client: GeminiClient; fetchImpl:
   return { client, fetchImpl };
 }
 
-async function failureFor(response: Response) {
+async function failureFor(response: Response, model?: string) {
   const { client } = clientReturning(response);
-  const result = await client.generate({ system: 's', prompt: 'p' });
+  const result = await client.generate({ system: 's', prompt: 'p', model: model ?? 'test-model' });
   if (result.ok) throw new Error('expected a failure');
   return result.error;
 }
@@ -33,6 +33,9 @@ describe('every HTTP failure is told apart', () => {
         'NOT_FOUND',
         'models/gemini-2.5-flash is not found for API version v1beta, or is not supported for generateContent.',
       ),
+      // The name that actually did this to the shop, pinned so the test reads the message
+      // rather than whatever the default happens to be this month.
+      'gemini-2.5-flash',
     );
 
     expect(error.kind).toBe('modelUnavailable');
@@ -94,7 +97,9 @@ describe('every HTTP failure is told apart', () => {
       googleError(429, 'RESOURCE_EXHAUSTED', 'Quota exceeded for quota metric free tier requests'),
     );
     expect(quota.kind).toBe('quotaExhausted');
-    expect(aiErrorMessage(quota)).toContain('will not charge you');
+    expect(aiErrorMessage(quota)).toContain('never turns on billing');
+    // It must not promise something about the owner's Google account that it cannot know.
+    expect(aiErrorMessage(quota)).not.toContain('will not charge you');
 
     const paced = await failureFor(googleError(429, 'UNAVAILABLE', 'Too many requests, slow down'));
     expect(paced.kind).toBe('rateLimited');

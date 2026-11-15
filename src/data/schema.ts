@@ -198,6 +198,8 @@ export interface StoredSetting {
 export const SettingKey = {
   GEMINI_API_KEY: 'geminiApiKey',
   GEMINI_MODEL: 'geminiModel',
+  /** The model that last answered, with a fingerprint of the key it answered for. */
+  GEMINI_WORKING_MODEL: 'geminiWorkingModel',
   PRICING_RULES: 'pricingRules',
   LAST_OPENED_ORDER: 'lastOpenedOrder',
 } as const;

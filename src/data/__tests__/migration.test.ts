@@ -239,3 +239,56 @@ describe('upgrading a version-1 database', () => {
     expect(again.id).toBe(product.id);
   });
 });
+
+describe('remembering which model works, per key', () => {
+  let counter = 0;
+  const freshRepo = async (): Promise<Repository> => {
+    resetDbHandle();
+    counter += 1;
+    return Repository.open(`working-model-db-${counter}`);
+  };
+
+  it('gives the model back for the same key', async () => {
+    const repo = await freshRepo();
+    await repo.rememberWorkingModel('AIza-key-one', 'gemini-3.8-flash');
+    expect(await repo.workingModel('AIza-key-one')).toBe('gemini-3.8-flash');
+  });
+
+  it('forgets it the moment the key changes', async () => {
+    const repo = await freshRepo();
+    await repo.rememberWorkingModel('AIza-key-one', 'gemini-3.8-flash');
+
+    // A different key usually means a different Google project, which may be offered an
+    // entirely different set of models. Starting from the old answer just wastes a call.
+    expect(await repo.workingModel('AIza-key-two')).toBeNull();
+    expect(await repo.workingModel(null)).toBeNull();
+  });
+
+  it('stores a fingerprint, never the key itself', async () => {
+    const repo = await freshRepo();
+    const key = 'AIzaSyEXAMPLEEXAMPLEEXAMPLEEXAMPLE1234';
+    await repo.rememberWorkingModel(key, 'gemini-3.8-flash');
+
+    const raw = JSON.stringify(await repo.setting('geminiWorkingModel'));
+    expect(raw).toContain('gemini-3.8-flash');
+    expect(raw).not.toContain(key);
+    expect(raw).not.toContain('AIzaSy');
+  });
+
+  it('can be cleared outright', async () => {
+    const repo = await freshRepo();
+    await repo.rememberWorkingModel('AIza-key-one', 'gemini-3.8-flash');
+    await repo.forgetWorkingModel();
+    expect(await repo.workingModel('AIza-key-one')).toBeNull();
+  });
+
+  it('does not disturb the stored key or model override', async () => {
+    const repo = await freshRepo();
+    await repo.setApiKey('AIza-the-owners-own-key');
+    await repo.setModel('typed-by-hand');
+    await repo.rememberWorkingModel('AIza-the-owners-own-key', 'gemini-3.8-flash');
+
+    expect(await repo.apiKey()).toBe('AIza-the-owners-own-key');
+    expect(await repo.model()).toBe('typed-by-hand');
+  });
+});

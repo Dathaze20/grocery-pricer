@@ -66,6 +66,35 @@ export class Repository {
     await this.putSetting(SettingKey.GEMINI_API_KEY, trimmed);
   }
 
+  /**
+   * The model that last worked, but only if it worked for the key in use now.
+   *
+   * Tied to the key because model access is granted per Google project: a key swapped for a
+   * different project's can be offered an entirely different set, and starting from the old
+   * project's answer would just cost a wasted call. The key is never stored here - only a
+   * short non-reversible fingerprint of it, which is enough to notice it changed.
+   */
+  async workingModel(apiKey: string | null): Promise<string | null> {
+    const stored = await this.setting<{ model: string; keyPrint: string }>(
+      SettingKey.GEMINI_WORKING_MODEL,
+    );
+    if (stored === undefined || stored === null) return null;
+    if (stored.keyPrint !== fingerprint(apiKey)) return null;
+    const trimmed = stored.model?.trim();
+    return trimmed !== undefined && trimmed.length > 0 ? trimmed : null;
+  }
+
+  async rememberWorkingModel(apiKey: string | null, model: string): Promise<void> {
+    await this.putSetting(SettingKey.GEMINI_WORKING_MODEL, {
+      model,
+      keyPrint: fingerprint(apiKey),
+    });
+  }
+
+  async forgetWorkingModel(): Promise<void> {
+    await this.db.delete('settings', SettingKey.GEMINI_WORKING_MODEL);
+  }
+
   async model(): Promise<string | null> {
     return this.setting<string>(SettingKey.GEMINI_MODEL);
   }
@@ -463,4 +492,22 @@ async function deleteByIndex(
 ): Promise<void> {
   const keys = await index.getAllKeys(orderId);
   await Promise.all(keys.map((key) => index.objectStore.delete(key)));
+}
+
+/**
+ * A short, non-reversible mark of a key, used only to tell one key from another.
+ *
+ * Not a security measure and not trying to be: it never leaves the device, and the key itself
+ * is already stored beside it. The point is simply that nothing which looks like a credential
+ * ends up in a second place where it could be logged or exported by mistake.
+ */
+function fingerprint(apiKey: string | null): string {
+  const text = apiKey?.trim() ?? '';
+  if (text.length === 0) return 'none';
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${text.length}-${hash.toString(16)}`;
 }
