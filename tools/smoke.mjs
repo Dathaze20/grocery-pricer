@@ -69,11 +69,19 @@ async function main() {
 
     const calls = [];
     const served = [];
+    let extractionDelayMs = 0;
     await page.route('https://generativelanguage.googleapis.com/**', async (route) => {
       const url = route.request().url();
       calls.push(url);
       const post = route.request().postDataJSON();
       const prompt = JSON.stringify(post?.contents ?? '');
+
+      // Reading a receipt is the slow call in real life. Held briefly here so the test can
+      // actually get a question in while it is running - which is the whole point of the
+      // chat opening first, and cannot be exercised against an instant reply.
+      if (extractionDelayMs > 0 && prompt.includes('sourcePhotoIds')) {
+        await new Promise((resolve) => setTimeout(resolve, extractionDelayMs));
+      }
 
       if (prompt.includes('\\"products\\"') || prompt.includes('Identify every distinct product')) {
         served.push('identification');
@@ -207,9 +215,84 @@ async function main() {
     await page.waitForSelector('.photo img');
     check('a photographed receipt appears', (await page.locator('.photo').count()) === 1);
 
+    // Slow enough that a human could type a question into the gap.
+    extractionDelayMs = 6000;
     await page.click('button[aria-label="Process order"]');
-    await waitOrExplain(page, '.bubble.reply', { served, errors });
-    const opening = await page.locator('.bubble.reply').first().innerText();
+
+    // The chat opens at once now, while the receipt is still being read. That is the point of
+    // the change, so the test asserts it rather than waiting the wait away.
+    await page.waitForSelector('.chat', { timeout: 5000 });
+    check('the chat opens immediately, without waiting for the receipt', true);
+    // Waited for, not sampled: the progress line changes as the work moves, so looking once
+    // at an arbitrary moment is a race, and a test that races is worse than no test.
+    const sawProgress = await page
+      .waitForSelector('.bubble.status .spinner', { timeout: 15000 })
+      .then(() => true)
+      .catch(() => false);
+    check('and says what it is doing while it reads', sawProgress);
+    check(
+      'with the question box usable while it reads',
+      await page.isEnabled('input[placeholder*="Ask about"]'),
+    );
+
+    // Asked while the receipt is still being read. It must be kept, not answered from nothing.
+    await page.fill('.composer input[type=text]', 'how much is the mayonnaise');
+    await page.click('button[aria-label="Send"]');
+
+    // Two questions, asked while the receipt is still being read. Neither may be answered
+    // from nothing, and the second must not evict the first.
+    await page.waitForSelector('text=/still reading the receipt/', { timeout: 15000 });
+    await page.fill('.composer input[type=text]', 'what should I sell it for');
+    await page.click('button[aria-label="Send"]');
+    await page.waitForFunction(
+      () => document.body.innerText.includes('what should I sell it for'),
+      null,
+      { timeout: 10000 },
+    );
+
+    const whileReading = (await page.locator('.bubble').allInnerTexts()).join(' | ');
+    check(
+      'both questions asked during reading are kept',
+      whileReading.includes('how much is the mayonnaise') &&
+        whileReading.includes('what should I sell it for'),
+      whileReading,
+    );
+    check(
+      'and the wait is explained once, not once per question',
+      (whileReading.match(/still reading the receipt/g) ?? []).length === 1,
+      whileReading,
+    );
+    check(
+      'with no price invented before the costs exist',
+      !whileReading.includes('$4.99'),
+      whileReading,
+    );
+
+    // Then the figures arrive on their own.
+    extractionDelayMs = 0;
+    await waitOrExplain(page, 'text=/Receipt read/', { served, errors });
+
+    // And the queued questions are answered, once each.
+    await page.waitForFunction(
+      () => document.querySelectorAll('.bubble .spinner').length === 0,
+      null,
+      { timeout: 30000 },
+    );
+    const afterReading = await page.locator('.bubble').allInnerTexts();
+    check(
+      'each queued question appears exactly once',
+      afterReading.filter((t) => t.includes('how much is the mayonnaise')).length === 1,
+      afterReading.join(' | '),
+    );
+    check(
+      'and the queued question is answered from the receipt',
+      afterReading.join(' | ').includes('$4.99'),
+      afterReading.join(' | '),
+    );
+    const opening = await page
+      .locator('.bubble.reply:not(.status)', { hasText: 'wholesale' })
+      .first()
+      .innerText();
     check('the order is summarised', opening.includes('1 product'), opening);
     check('the total is the app\'s own arithmetic', opening.includes('$24.00'), opening);
     check('gemini was actually called', calls.length > 0);
@@ -218,10 +301,10 @@ async function main() {
     const callsBeforeQuestion = calls.length;
     await page.fill('.composer input[type=text]', 'how much is the mayonnaise');
     await page.click('button[aria-label="Send"]');
-    await page.waitForFunction(() => document.querySelectorAll('.bubble').length >= 3, null, {
+    await page.waitForFunction(() => document.querySelectorAll('.bubble .spinner').length === 0, null, {
       timeout: 20000,
     });
-    const answer = await page.locator('.bubble.reply').last().innerText();
+    const answer = await page.locator('.bubble.reply:not(.status)').last().innerText();
     // $24.00 for 12 is $2.00 each, which is the $2.00-$2.99 rung: $4.99.
     check('the answer is priced from the local engine', answer.includes('$4.99'), answer);
     check('the answer names the product', answer.toLowerCase().includes('mayonnaise'), answer);
@@ -245,7 +328,7 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll('.bubble').length >= 5, null, {
       timeout: 20000,
     });
-    const photoAnswer = await page.locator('.bubble.reply').last().innerText();
+    const photoAnswer = await page.locator('.bubble.reply:not(.status)').last().innerText();
     check(
       'a photographed product is priced from the receipt',
       photoAnswer.includes('$2.00 each → $4.99 (suggested)'),
@@ -390,7 +473,8 @@ async function main() {
     await page.waitForSelector('.bubble');
     check(
       'a processed order can be read offline',
-      (await page.locator('.bubble').first().innerText()).includes('$24.00'),
+      // The whole conversation is stored, so the figures are there wherever they sit in it.
+      (await page.locator('.bubble').allInnerTexts()).join(' ').includes('$24.00'),
     );
     await context.setOffline(false);
 

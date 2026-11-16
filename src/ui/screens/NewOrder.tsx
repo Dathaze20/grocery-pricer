@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { OrderImageType } from '../../core/ai-types';
 import { readFile } from '../../app/images';
-import { processOrder } from '../../app/processing';
+import { jobs } from '../../app/jobs';
 import type { Repository } from '../../data/repository';
 import { OrderStatus, type StoredPhoto } from '../../data/schema';
 import type { Screen } from '../App';
 import { PhotoGrid } from '../components/PhotoGrid';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
-import { updates } from '../updates';
 import { providerFor } from '../services';
 
 export function NewOrder(props: {
@@ -18,8 +17,9 @@ export function NewOrder(props: {
 }): JSX.Element {
   const { repo, orderId, go } = props;
   const [photos, setPhotos] = useState<StoredPhoto[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [step, setStep] = useState<string | null>(null);
+  // There is no busy state left on this screen: pressing the button leaves it. What remains is
+  // whether a photograph is being added, which is quick and local.
+  const busy = false;
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -56,28 +56,18 @@ export function NewOrder(props: {
     [repo, reload],
   );
 
-  const process = useCallback(async () => {
-    setBusy(true);
+  /**
+   * Starts the work and gets out of the way.
+   *
+   * The owner used to be held on this screen watching a progress line, and when the reading
+   * ran long there was nothing to do but stare at it. The job is handed to the coordinator,
+   * which is not tied to this component, and the chat opens at once - so the receipt is read
+   * while its owner is already asking questions or photographing a case.
+   */
+  const process = useCallback(() => {
     setError(null);
-    setStep('Starting');
-    // Held by the work, not by this screen. Pressing Back mid-receipt unmounts the screen while
-    // the request is still in the air; an update that landed then would reload the page out
-    // from under it and leave the order stuck half read.
-    const release = updates.hold('blocking');
-    try {
-      const provider = await providerFor(repo);
-      const result = await processOrder(repo, provider, orderId, { onProgress: setStep });
-      if (result.ok) {
-        go({ kind: 'order', orderId });
-        return;
-      }
-      setError(result.summary);
-      if (result.error?.kind === 'missingKey') go({ kind: 'settings' });
-    } finally {
-      setBusy(false);
-      setStep(null);
-      release();
-    }
+    jobs.start(repo, providerFor, orderId);
+    go({ kind: 'order', orderId });
   }, [repo, orderId, go]);
 
   const cancel = useCallback(() => {
@@ -134,16 +124,9 @@ export function NewOrder(props: {
             className="btn btn-primary btn-block"
             aria-label="Process order"
             disabled={busy || count === 0}
-            onClick={() => void process()}
+            onClick={process}
           >
-            {busy ? (
-              <>
-                <span className="spinner" aria-hidden="true" />
-                {step ?? 'Working'}…
-              </>
-            ) : (
-              'PROCESS ORDER'
-            )}
+            PROCESS ORDER
           </button>
           <button type="button" className="btn btn-quiet btn-block" disabled={busy} onClick={cancel}>
             Cancel

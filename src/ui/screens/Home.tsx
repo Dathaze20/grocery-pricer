@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Money } from '../../core/money';
 import type { Repository } from '../../data/repository';
-import { OrderStatus, type StoredOrder } from '../../data/schema';
+import { OrderStatus, type StoredOrder, isIncomplete } from '../../data/schema';
 import type { Screen } from '../App';
 import { TopBar } from '../components/TopBar';
 import { CameraIcon, ChevronRightIcon, SettingsIcon } from '../components/icons';
@@ -95,7 +95,11 @@ export function Home(props: { repo: Repository; go: (screen: Screen) => void }):
                     <span className="row-line">
                       <span className="name">{order.supplier ?? 'Order'}</span>
                       {order.status === OrderStatus.READY && (
-                        <span className="amount price">
+                        // A partial total is not the purchase total, so it is never shown as
+                        // one. The figure is still useful - it is what was read - but it is
+                        // marked as a floor rather than a sum anyone should pay against.
+                        <span className={`amount price${isIncomplete(order) ? ' partial' : ''}`}>
+                          {isIncomplete(order) ? 'at least ' : ''}
                           {Money.fromStorage(order.totalWholesaleCost).format()}
                         </span>
                       )}
@@ -161,6 +165,11 @@ function StatusChip(props: { order: StoredOrder }): JSX.Element {
   const { order } = props;
   switch (order.status) {
     case OrderStatus.READY:
+      // Still openable, still useful - the products that were read are real - but nobody
+      // should have to remember which of their orders was only half read.
+      if (isIncomplete(order)) {
+        return <span className="chip chip-warn">Incomplete receipt</span>;
+      }
       return (
         <span className="chip">
           {order.itemCount} {order.itemCount === 1 ? 'product' : 'products'}

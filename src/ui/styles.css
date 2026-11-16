@@ -712,3 +712,22 @@ button.notice { display: block; width: 100%; font: inherit; font-size: 0.9375rem
 .failure-reason { display: block; color: var(--bad); white-space: normal; }
 
 .is-unsaved { color: var(--warn); font-weight: 650; }
+
+/* The microphone while it is actually listening. Colour alone would not say it, so the ring
+   pulses: a control that is recording should be unmistakable. */
+.icon-btn.listening {
+  background: var(--brand);
+  color: #fff;
+  animation: listening-pulse 1.4s ease-in-out infinite;
+}
+@keyframes listening-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(21, 94, 52, 0.45); }
+  50% { box-shadow: 0 0 0 6px rgba(21, 94, 52, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn.listening { animation: none; }
+}
+
+/* A total that is only part of the purchase. Amber, not red: the figure is real, it is just
+   not the whole order. */
+.amount.price.partial { color: var(--warn); }

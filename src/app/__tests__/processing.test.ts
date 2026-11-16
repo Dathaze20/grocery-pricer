@@ -6,7 +6,7 @@ import { ItemConfidence } from '../../core/models';
 import { PricingSource } from '../../core/pricing';
 import { Repository } from '../../data/repository';
 import { resetDbHandle } from '../../data/db';
-import { OrderStatus, MessageRole, type StoredPhoto } from '../../data/schema';
+import { OrderStatus, MessageRole, type StoredPhoto, isIncomplete } from '../../data/schema';
 import { OrderImageType, type AiExtractedItem } from '../../core/ai-types';
 import { processOrder } from '../processing';
 
@@ -287,11 +287,16 @@ describe('processOrder', () => {
     await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
 
     const calls = provider.calls.filter((c) => c.startsWith('extractOrder'));
-    expect(calls).toHaveLength(3);
-    expect(calls[0]!.split(',')).toHaveLength(3);
+    // Two photographs per request, so seven go out as four. Smaller requests come back sooner
+    // and a slow one costs a pair rather than a third of the receipt.
+    expect(calls).toHaveLength(4);
+    expect(calls[0]!.split(',')).toHaveLength(2);
+
+    // And no classification round-trip: nothing is sent before the reading begins.
+    expect(provider.calls.filter((c) => c.startsWith('classifyImages'))).toHaveLength(0);
   });
 
-  it('skips photos of products when reading the paperwork', async () => {
+  it('skips photos already known to be of products, without asking first', async () => {
     const order = await repo.createOrder();
     const receipt = await repo.addPhoto({
       orderId: order.id,
@@ -301,22 +306,52 @@ describe('processOrder', () => {
       isDeliveryPhoto: false,
       createdAt: 1,
     });
+    // A snapshot taken through the chat is stored as a product photo when it is added, which
+    // is where that knowledge comes from now that nothing is sent away to ask.
     const shelf = await repo.addPhoto({
       orderId: order.id,
       bytes: photoBytes(),
       mimeType: 'image/jpeg',
-      type: OrderImageType.UNKNOWN,
+      type: OrderImageType.PRODUCT_PHOTO,
       isDeliveryPhoto: false,
       createdAt: 2,
     });
-    const provider = new FakeAiProvider().queueClassification([
-      { photoId: receipt.id, type: OrderImageType.RECEIPT, confidence: 0.9 },
-      { photoId: shelf.id, type: OrderImageType.PRODUCT_PHOTO, confidence: 0.9 },
-    ]);
+    const provider = new FakeAiProvider();
 
     await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
 
     expect(provider.calls).toContain(`extractOrder(${receipt.id})`);
+    expect(provider.calls.join(' ')).not.toContain(String(shelf.id));
+    expect(provider.calls.filter((c) => c.startsWith('classifyImages'))).toHaveLength(0);
+  });
+
+  it('does not re-send a request that already ran out of time', async () => {
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'timeout' });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(result.ok).toBe(false);
+    // One attempt, not two. The same photographs going out again would spend another ninety
+    // seconds without being any more likely to finish.
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(1);
+  });
+
+  it('times each phase, and records nothing but durations', async () => {
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+
+    const result = await processOrder(repo, provider, orderId);
+
+    expect(result.timings.length).toBeGreaterThan(0);
+    expect(result.timings.map((t) => t.phase)).toContain('prepare-photos');
+    for (const timing of result.timings) {
+      expect(typeof timing.ms).toBe('number');
+      // Phase names are fixed labels. No file name, no product, no price, no key.
+      expect(timing.phase).toMatch(/^[a-z-]+(-\d+)?$/);
+    }
   });
 
   it('keeps a nameless row out of the order and says a line was dropped', async () => {
@@ -664,5 +699,279 @@ describe('an unavailable model does not reach the shopkeeper', () => {
     expect(result.summary).not.toContain('HTTP');
     expect(await repo.photosFor(orderId, false)).toHaveLength(1);
     expect(await repo.itemsFor(orderId)).toHaveLength(0);
+  });
+});
+
+describe('telling a complete reading from an incomplete one', () => {
+  it('does not call an empty receipt a success', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    // The model answered, and found nothing on the page.
+    provider.queueExtraction({ supplier: 'JETRO', items: [], warnings: [] });
+
+    const result = await processOrder(repo, provider, orderId);
+
+    expect(result.ok).toBe(false);
+    expect(result.outcome).toBe('empty');
+    // A tick and a total of zero beside a receipt nobody read is worse than an error.
+    expect((await repo.order(orderId))!.status).not.toBe(OrderStatus.READY);
+    expect(await repo.itemsFor(orderId)).toHaveLength(0);
+    // And the photographs are still here to try again with.
+    expect(await repo.photosFor(orderId, false)).toHaveLength(1);
+    expect(result.summary.toLowerCase()).toContain('could not');
+  });
+
+  it('keeps the phase timings when extraction fails, which is when they matter most', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'timeout' });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(result.ok).toBe(false);
+    // The six-minute timeout is exactly the case we need durations for.
+    expect(result.timings.length).toBeGreaterThan(0);
+    expect(result.timings.map((t) => t.phase)).toContain('prepare-photos');
+    expect(result.timings.some((t) => t.phase.startsWith('extract-'))).toBe(true);
+  });
+
+  it('marks a half-read receipt as incomplete rather than ready', async () => {
+    const repo = await freshRepo();
+    const order = await repo.createOrder();
+    for (let i = 0; i < 4; i += 1) {
+      await repo.addPhoto({
+        orderId: order.id,
+        bytes: photoBytes(),
+        mimeType: 'image/jpeg',
+        type: OrderImageType.RECEIPT,
+        isDeliveryPhoto: false,
+        createdAt: Date.now() + i,
+      });
+    }
+
+    const provider = new FakeAiProvider();
+    // Four photographs is two groups: the first reads, the second does not come back.
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    provider.queueFailure({ kind: 'timeout' });
+
+    const result = await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
+
+    expect(result.outcome).toBe('partial');
+    expect(result.itemCount).toBe(1);
+    // The products that were read are kept - they are real - but the total is not the order.
+    expect(await repo.itemsFor(order.id)).toHaveLength(1);
+    expect(result.summary).toContain('not fully read');
+    expect(result.warnings.join(' ')).toContain('incomplete');
+  });
+
+  it('calls a fully read receipt complete', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+
+    const result = await processOrder(repo, provider, orderId);
+
+    expect(result.outcome).toBe('complete');
+    expect(result.summary).not.toContain('not fully read');
+  });
+
+  it('retrying a partial read replaces rather than duplicates, and keeps approved prices', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    await processOrder(repo, provider, orderId);
+
+    const first = (await repo.itemsFor(orderId))[0]!;
+    await repo.approvePrice(first.id, Money.of('6.25'));
+
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    const again = await processOrder(repo, provider, orderId, { reprocess: true });
+
+    expect(again.ok).toBe(true);
+    const rows = await repo.itemsFor(orderId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.approvedPrice).toBe(Money.of('6.25').toStorage());
+  });
+});
+
+describe('an incomplete order stays incomplete after the app is closed', () => {
+  async function halfReadOrder(repo: Repository): Promise<number> {
+    const order = await repo.createOrder();
+    for (let i = 0; i < 4; i += 1) {
+      await repo.addPhoto({
+        orderId: order.id,
+        bytes: photoBytes(),
+        mimeType: 'image/jpeg',
+        type: OrderImageType.RECEIPT,
+        isDeliveryPhoto: false,
+        createdAt: Date.now() + i,
+      });
+    }
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    provider.queueFailure({ kind: 'timeout' });
+    await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
+    return order.id;
+  }
+
+  it('records the unread groups on the order itself', async () => {
+    const repo = await freshRepo();
+    const orderId = await halfReadOrder(repo);
+
+    // Read back the way the home screen reads it, not from the result object that only
+    // existed in the session that did the work.
+    const stored = (await repo.order(orderId))!;
+    expect(isIncomplete(stored)).toBe(true);
+    expect(stored.unreadPhotoGroups).toBe(1);
+    expect(stored.warnings.join(' ')).toContain('incomplete');
+  });
+
+  it('a fully read order is not marked incomplete', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    await processOrder(repo, provider, orderId);
+
+    expect(isIncomplete((await repo.order(orderId))!)).toBe(false);
+  });
+
+  it('an order saved before this existed reads as complete, with no migration', async () => {
+    const repo = await freshRepo();
+    const order = await repo.createOrder();
+
+    // Exactly the shape of a version-2 record: no such field at all.
+    const stored = (await repo.order(order.id))!;
+    expect(stored.unreadPhotoGroups).toBeUndefined();
+    expect(isIncomplete(stored)).toBe(false);
+  });
+
+  it('a successful re-read clears the incomplete mark without duplicating or losing anything', async () => {
+    const repo = await freshRepo();
+    const orderId = await halfReadOrder(repo);
+    const first = (await repo.itemsFor(orderId))[0]!;
+    await repo.approvePrice(first.id, Money.of('6.25'));
+
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    provider.queueExtraction({ supplier: 'JETRO', items: [], warnings: [] });
+    const again = await processOrder(repo, provider, orderId, { reprocess: true });
+
+    expect(again.outcome).toBe('complete');
+    expect(isIncomplete((await repo.order(orderId))!)).toBe(false);
+
+    const rows = await repo.itemsFor(orderId);
+    expect(rows).toHaveLength(1);
+    // The owner's own decision survived the re-read.
+    expect(rows[0]!.approvedPrice).toBe(Money.of('6.25').toStorage());
+  });
+
+  it('never reports a partial total as the whole purchase', async () => {
+    const repo = await freshRepo();
+    const orderId = await halfReadOrder(repo);
+    const stored = (await repo.order(orderId))!;
+
+    // The figure is real and worth showing - it is the claim around it that must be hedged.
+    expect(stored.totalWholesaleCost).toBeGreaterThan(0);
+    expect(isIncomplete(stored)).toBe(true);
+  });
+});
+
+describe('three ways a receipt can be miscounted', () => {
+  it('keeps sizes apart, keeps repeated cases, and folds an overlap into one', async () => {
+    const repo = await freshRepo();
+    const order = await repo.createOrder();
+    const photoA = await repo.addPhoto({
+      orderId: order.id,
+      bytes: photoBytes(),
+      mimeType: 'image/jpeg',
+      type: OrderImageType.RECEIPT,
+      isDeliveryPhoto: false,
+      createdAt: 1,
+    });
+    const photoB = await repo.addPhoto({
+      orderId: order.id,
+      bytes: photoBytes(),
+      mimeType: 'image/jpeg',
+      type: OrderImageType.RECEIPT,
+      isDeliveryPhoto: false,
+      createdAt: 2,
+    });
+
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [
+        // Two sizes under the one shorthand the receipt prints for both.
+        extractedItem({
+          rawName: 'HELLM MAYO',
+          canonicalName: "Hellmann's Mayonnaise",
+          size: '8 OZ',
+          casePrice: '24.00',
+          sourcePhotoIds: [photoA.id],
+        }),
+        extractedItem({
+          rawName: 'HELLM MAYO',
+          canonicalName: "Hellmann's Mayonnaise",
+          size: '40 OZ',
+          casePrice: '60.00',
+          sourcePhotoIds: [photoA.id],
+        }),
+        // The same product printed twice on the one photograph: two cases bought, not one
+        // line seen twice.
+        extractedItem({
+          rawName: 'EXMP CORN OIL',
+          canonicalName: 'Example Corn Oil',
+          size: '1 GAL',
+          casePrice: '30.00',
+          sourcePhotoIds: [photoA.id],
+        }),
+        extractedItem({
+          rawName: 'EXMP CORN OIL',
+          canonicalName: 'Example Corn Oil',
+          size: '1 GAL',
+          casePrice: '30.00',
+          sourcePhotoIds: [photoA.id],
+        }),
+      ],
+      warnings: [],
+    });
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [
+        // The overlap: the same printed line caught again in the next photograph.
+        extractedItem({
+          rawName: 'HELLM MAYO',
+          canonicalName: "Hellmann's Mayonnaise",
+          size: '8 OZ',
+          casePrice: '24.00',
+          sourcePhotoIds: [photoB.id],
+        }),
+      ],
+      warnings: [],
+    });
+
+    const result = await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
+    expect(result.ok).toBe(true);
+
+    const rows = await repo.itemsFor(order.id);
+
+    // 1. The two mayonnaise sizes are separate products with separate prices.
+    const mayo = rows.filter((r) => r.displayName.toLowerCase().includes('mayonnaise'));
+    expect(mayo).toHaveLength(2);
+    const productIds = new Set(mayo.map((r) => r.productId));
+    expect(productIds.size).toBe(2);
+    expect(new Set(mayo.map((r) => r.size))).toEqual(new Set(['8 OZ', '40 OZ']));
+
+    // 2. Both cases of corn oil survive - that is money the shop actually paid.
+    const oil = rows.filter((r) => r.displayName.toLowerCase().includes('corn oil'));
+    expect(oil).toHaveLength(2);
+
+    // 3. The overlapping photograph did not add a third jar of 8oz mayonnaise.
+    expect(mayo.filter((r) => r.size === '8 OZ')).toHaveLength(1);
   });
 });

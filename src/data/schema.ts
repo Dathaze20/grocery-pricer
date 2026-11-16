@@ -44,6 +44,19 @@ export interface StoredOrder {
   warnings: string[];
   /** Set once the shopkeeper has checked this order against a delivery. */
   deliveryCheckedAt: number | null;
+  /**
+   * How many groups of photographs were never read, when some were not.
+   *
+   * Optional, and absent on every order saved before this existed - which is exactly how it
+   * needs to be. An old record simply has no value here and is read as complete, so nothing
+   * has to be rewritten and no migration touches anybody's orders.
+   *
+   * Why store it at all: a partly read receipt used to be marked READY like any other, so the
+   * home screen showed a wholesale total that was missing lines, and the warning in the chat
+   * was gone the next time the app opened. A total the shop prices against must not be able to
+   * quietly become the whole order.
+   */
+  unreadPhotoGroups?: number;
 }
 
 export interface StoredPhoto {
@@ -206,3 +219,15 @@ export const SettingKey = {
   LAST_OPENED_ORDER: 'lastOpenedOrder',
 } as const;
 export type SettingKey = (typeof SettingKey)[keyof typeof SettingKey];
+
+/**
+ * Whether this order is missing part of its receipt.
+ *
+ * One place, so the home screen, the chat and the order list cannot disagree about it. An
+ * order saved before this was recorded has no value and reads as complete, which is the right
+ * answer for every order that was ever fully read - and the wrong one only for a partial read
+ * that happened before the app could tell the difference.
+ */
+export function isIncomplete(order: Pick<StoredOrder, 'unreadPhotoGroups'>): boolean {
+  return (order.unreadPhotoGroups ?? 0) > 0;
+}

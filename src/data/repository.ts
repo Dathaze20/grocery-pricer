@@ -357,7 +357,16 @@ export class Repository {
       const all = await this.db.getAll('products');
       // Products saved before aliases existed have no such field; reading it as a list would
       // throw and take the whole lookup with it.
-      const byAlias = all.find((product) => (product.aliases ?? []).includes(alias));
+      //
+      // A size or variant that disagrees rules the match out. A receipt abbreviation is the
+      // shop's shorthand, not an identity: "HELLM MAYO" is printed over the 8oz and the 40oz
+      // alike, and matching on it alone would hand the big jar the small jar's product - and
+      // with it the small jar's approved selling price. The name lookup below has always
+      // compared size and variant; this one quietly did not.
+      const byAlias = all.find(
+        (product) =>
+          (product.aliases ?? []).includes(alias) && !conflicts(product, input.size, variant),
+      );
       if (byAlias !== undefined) return this.touchProduct(byAlias, alias);
     }
 
@@ -543,4 +552,32 @@ function fingerprint(apiKey: string | null): string {
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   return `${text.length}-${hash.toString(16)}`;
+}
+
+/**
+ * Whether a stored product is definitely NOT what this receipt line describes.
+ *
+ * Used by the alias lookup, and deliberately weaker than the exact comparison the name lookup
+ * makes. The two have different evidence behind them, so they get different rules:
+ *
+ *   - An alias was written down because a barcode or the supplier's item number once proved
+ *     this abbreviation belongs to this product. That is real evidence. A line that prints the
+ *     abbreviation and no readable size is not a reason to throw the evidence away and make a
+ *     second product - the receipt simply did not say.
+ *   - A size that disagrees is different. 8 OZ against 40 OZ is not a gap in what the receipt
+ *     said; it is the receipt saying something else. The alias does not survive it.
+ *
+ * So: unknown on either side is not a conflict, two known and different values are.
+ */
+function conflicts(
+  product: Pick<StoredProduct, 'size' | 'variant'>,
+  size: string | null,
+  variant: string | null,
+): boolean {
+  return differs(product.size ?? null, size ?? null) || differs(product.variant ?? null, variant);
+}
+
+function differs(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return false;
+  return a.trim().toUpperCase() !== b.trim().toUpperCase();
 }

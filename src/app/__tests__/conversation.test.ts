@@ -5,7 +5,9 @@ import { Category, ItemConfidence } from '../../core/models';
 import { PricingSource } from '../../core/pricing';
 import { resetDbHandle } from '../../data/db';
 import { Repository } from '../../data/repository';
-import { MessageRole, type StoredItem } from '../../data/schema';
+import { MessageRole, type StoredItem, OrderStatus } from '../../data/schema';
+import { pending } from '../pending';
+import { OrderImageType } from '../../core/ai-types';
 import { ask } from '../conversation';
 
 let dbCounter = 1000;
@@ -265,5 +267,195 @@ describe('ask', () => {
 
     expect(answer.text).toContain('Corn Oil');
     expect(answer.text).not.toContain('Olive Oil');
+  });
+});
+
+describe('what may be said about a product on a half-read receipt', () => {
+  it('does not claim a product was absent when part of the receipt was never read', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+    // The order holds products, and is known to be missing part of its receipt.
+    await repo.updateOrder(orderId, { status: OrderStatus.READY, unreadPhotoGroups: 1 });
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'how much is the ketchup');
+
+    // It may say it did not find it. It may not say the shop did not buy it.
+    expect(answer.text).not.toContain('not in this order');
+    expect(answer.text.toLowerCase()).toContain('never read');
+  });
+
+  it('answers plainly about a product that is there, incomplete or not', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+    await repo.updateOrder(orderId, { status: OrderStatus.READY, unreadPhotoGroups: 1 });
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'how much is the mayonnaise');
+
+    expect(answer.text.toLowerCase()).toContain('mayonnaise');
+    // The caveat belongs on absence, not on every answer.
+    expect(answer.text.toLowerCase()).not.toContain('never read');
+  });
+
+  it('still says "not in this order" when the receipt was fully read', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+    await repo.updateOrder(orderId, { status: OrderStatus.READY });
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'how much is the ketchup');
+
+    expect(answer.text.toLowerCase()).not.toContain('never read');
+  });
+});
+
+describe('telling an answer apart from a failure', () => {
+  it('marks a Gemini failure as not an answer', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'overloaded' });
+
+    // A question only Gemini could answer, so the failure is reached.
+    const answer = await ask(repo, provider, orderId, 'which of these is best value for a deli');
+
+    expect(answer.failed).toBe(true);
+    expect(answer.itemIds).toHaveLength(0);
+    // The text is still worth showing - it just is not an answer to the question.
+    expect(answer.text.length).toBeGreaterThan(0);
+  });
+
+  it('does not mark a real answer as failed', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'how much is the mayonnaise');
+
+    expect(answer.failed).toBeFalsy();
+    expect(answer.itemIds.length).toBeGreaterThan(0);
+  });
+
+  it('does not mark a local "could not find" as a failure', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'how much is the ketchup');
+
+    // Answered truthfully from what is stored. Nothing went wrong, so nothing is retried.
+    expect(answer.failed).toBeFalsy();
+  });
+
+  it('keeps the failure flag through the incomplete-receipt caveat', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+    await repo.updateOrder(orderId, { status: OrderStatus.READY, unreadPhotoGroups: 1 });
+
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'overloaded' });
+    const answer = await ask(repo, provider, orderId, 'which of these is best value for a deli');
+
+    expect(answer.failed).toBe(true);
+  });
+});
+
+describe('a queued question that fails, then is retried by hand', () => {
+  /** Exactly what the chat does: claim, answer, then complete or block. */
+  async function attempt(
+    repo: Repository,
+    provider: FakeAiProvider,
+    orderId: number,
+  ): Promise<'answered' | 'failed' | 'nothing-to-do'> {
+    const item = pending.claimNext(orderId);
+    if (item === null) return 'nothing-to-do';
+
+    const answer = await ask(repo, provider, orderId, item.question, { alreadyAsked: true });
+    if (answer.failed === true) {
+      pending.fail(orderId, item.id);
+      return 'failed';
+    }
+    pending.complete(orderId, item.id);
+    return 'answered';
+  }
+
+  it('does not retry itself, and succeeds when the owner asks again', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+    pending.clear(orderId);
+
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'overloaded' });
+    const question = 'which of these is best value for a deli';
+    await repo.say(orderId, MessageRole.USER, question);
+    pending.add(orderId, question, null);
+
+    expect(await attempt(repo, provider, orderId)).toBe('failed');
+    const callsAfterFailure = provider.calls.length;
+
+    // The queue is stalled, so every further pass does nothing at all. This is the loop that
+    // would otherwise keep a failing model busy with photographs.
+    expect(await attempt(repo, provider, orderId)).toBe('nothing-to-do');
+    expect(await attempt(repo, provider, orderId)).toBe('nothing-to-do');
+    expect(provider.calls).toHaveLength(callsAfterFailure);
+
+    // The question is still there, and still the owner's.
+    expect(pending.queue(orderId)).toHaveLength(1);
+    expect(pending.queue(orderId)[0]?.question).toBe(question);
+
+    // Pressing the button is what tries again.
+    pending.retry(orderId);
+    expect(await attempt(repo, provider, orderId)).toBe('answered');
+    expect(pending.queue(orderId)).toHaveLength(0);
+
+    // Asked once, and in the end answered once.
+    const said = await repo.conversation(orderId);
+    expect(said.filter((m) => m.text === question)).toHaveLength(1);
+    expect(await attempt(repo, provider, orderId)).toBe('nothing-to-do');
+  });
+
+  it('keeps several questions in the order they were asked across a failure', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+    pending.clear(orderId);
+
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'overloaded' });
+
+    pending.add(orderId, 'which of these is best value for a deli', null);
+    pending.add(orderId, 'how much is the mayonnaise', null);
+
+    expect(await attempt(repo, provider, orderId)).toBe('failed');
+    // The second question is not answered ahead of the first.
+    expect(await attempt(repo, provider, orderId)).toBe('nothing-to-do');
+    expect(pending.queue(orderId).map((q) => q.question)).toEqual([
+      'which of these is best value for a deli',
+      'how much is the mayonnaise',
+    ]);
+
+    pending.retry(orderId);
+    expect(await attempt(repo, provider, orderId)).toBe('answered');
+    expect(await attempt(repo, provider, orderId)).toBe('answered');
+    expect(pending.queue(orderId)).toHaveLength(0);
+  });
+
+  it('keeps the attached photograph through a failure and a retry', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+    pending.clear(orderId);
+
+    const photo = await repo.addPhoto({
+      orderId,
+      bytes: new Uint8Array([9, 9, 9]).buffer,
+      mimeType: 'image/jpeg',
+      type: OrderImageType.PRODUCT_PHOTO,
+      isDeliveryPhoto: false,
+      createdAt: Date.now(),
+    });
+    const entry = pending.add(orderId, 'how much is this', photo.id);
+
+    pending.claimNext(orderId);
+    pending.fail(orderId, entry.id);
+
+    // The row is in the database, not a File the page was holding, so it is still readable.
+    expect(pending.queue(orderId)[0]?.photoId).toBe(photo.id);
+    expect(await repo.photo(photo.id)).not.toBeNull();
   });
 });

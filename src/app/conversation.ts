@@ -6,7 +6,7 @@ import { aiErrorMessage, type OrderQuestionResolution } from '../core/ai-types';
 import { visualSearchText } from '../core/ai-types';
 import type { AiProvider } from '../ai/provider';
 import type { Repository } from '../data/repository';
-import { MessageRole, type StoredItem } from '../data/schema';
+import { MessageRole, type StoredItem, isIncomplete } from '../data/schema';
 import { toImagePart, type RawImage } from './images';
 
 export interface AskOptions {
@@ -14,6 +14,14 @@ export interface AskOptions {
   readonly photo?: { id: number; image: RawImage } | null;
   /** Set false to answer without ever calling Gemini. */
   readonly allowAi?: boolean;
+  /**
+   * The question is already in the conversation, so do not write it again.
+   *
+   * True for a question asked while the receipt was still being read: it was shown at the time
+   * so the owner could see it had been heard, and answering it later must not make it appear
+   * in the thread a second time.
+   */
+  readonly alreadyAsked?: boolean;
 }
 
 export interface Answer {
@@ -21,6 +29,14 @@ export interface Answer {
   readonly itemIds: readonly number[];
   /** True when a Gemini call was actually made to produce this. */
   readonly usedAi: boolean;
+  /**
+   * True when this text is Gemini's failure rather than an answer.
+   *
+   * The two read alike in the chat - both are a sentence from the app - but they are not the
+   * same thing at all. A question answered has been dealt with; a question that produced an
+   * error has not, and treating the second as the first quietly throws the question away.
+   */
+  readonly failed?: boolean;
 }
 
 /**
@@ -42,9 +58,29 @@ export async function ask(
   const stored = await repo.itemsFor(orderId);
   const engine = new OrderQueryEngine(stored.map(toQueryable));
 
-  await repo.say(orderId, MessageRole.USER, text, { photoId: options.photo?.id ?? null });
+  if (options.alreadyAsked !== true) {
+    await repo.say(orderId, MessageRole.USER, text, { photoId: options.photo?.id ?? null });
+  }
 
-  const answer = await resolve(repo, provider, engine, stored, orderId, text, options);
+  const resolved = await resolve(repo, provider, engine, stored, orderId, text, options);
+
+  /*
+   * An answer that names no product is the only kind that can mislead about the purchase.
+   *
+   * Applied here rather than at each place that gives up, because there are several and one
+   * of them will be added later. "I could not find that" is true whatever happened; "it is
+   * not in this order" is a claim about the delivery, and a receipt that was only half read
+   * does not support it.
+   */
+  const order = await repo.order(orderId);
+  const answer =
+    resolved.itemIds.length === 0 &&
+    order !== null &&
+    isIncomplete(order) &&
+    !resolved.text.includes('never read')
+      ? { ...resolved, text: `${resolved.text}${absenceCaveat(true)}` }
+      : resolved;
+
   await repo.say(orderId, MessageRole.APP, answer.text, { referencedItemIds: [...answer.itemIds] });
   return answer;
 }
@@ -62,9 +98,15 @@ async function resolve(
     return { text: 'There is nothing in this order yet.', itemIds: [], usedAi: false };
   }
 
+  // Whether this order is missing part of its receipt decides what may be said about a
+  // product that cannot be found: "not in this order" is a claim about the purchase, and only
+  // a fully read receipt supports it.
+  const order = await repo.order(orderId);
+  const incomplete = order !== null && isIncomplete(order);
+
   // A photo answers "which product" far better than any sentence can.
   if (options.photo !== null && options.photo !== undefined) {
-    return identifyFromPhoto(provider, engine, options.photo, text);
+    return identifyFromPhoto(provider, engine, options.photo, text, incomplete);
   }
 
   const intent = parseChatIntent(text);
@@ -91,7 +133,7 @@ async function resolve(
   );
 
   if (!resolution.ok) {
-    return { text: aiErrorMessage(resolution.error), itemIds: [], usedAi: true };
+    return { text: aiErrorMessage(resolution.error), itemIds: [], usedAi: true, failed: true };
   }
   return applyResolution(repo, engine, stored, resolution.value);
 }
@@ -266,10 +308,13 @@ async function identifyFromPhoto(
   engine: OrderQueryEngine,
   photo: { id: number; image: RawImage },
   text: string,
+  incomplete: boolean,
 ): Promise<Answer> {
   const part = await toImagePart(photo.image);
   const result = await provider.identifyProducts({ photoId: photo.id, ...part });
-  if (!result.ok) return { text: aiErrorMessage(result.error), itemIds: [], usedAi: true };
+  if (!result.ok) {
+    return { text: aiErrorMessage(result.error), itemIds: [], usedAi: true, failed: true };
+  }
 
   const found = result.value.products;
   if (found.length === 0) {
@@ -304,8 +349,8 @@ async function identifyFromPhoto(
     return {
       text:
         missing.length > 0
-          ? `That looks like ${missing[0]}, but it is not in this order.`
-          : 'That is not in this order.',
+          ? `That looks like ${missing[0]}, but ${incomplete ? 'it is not among the lines I read.' : 'it is not in this order.'}${absenceCaveat(incomplete)}`
+          : `${incomplete ? 'That is not among the lines I read.' : 'That is not in this order.'}${absenceCaveat(incomplete)}`,
       itemIds: [],
       usedAi: true,
     };
@@ -338,9 +383,24 @@ function profitNote(answer: PriceAnswer): string | null {
   return `Gross profit: ${summary.grossProfit.format()} each.`;
 }
 
-function notFound(): Answer {
+/**
+ * "Not in this order" is a claim about a purchase, and it needs the receipt to have been read.
+ *
+ * When some photographs were never read, the app does not know whether a product was bought -
+ * only that it is not among the lines it managed to see. Saying it was not in the order would
+ * be telling the shop something false about their own delivery.
+ */
+function absenceCaveat(incomplete: boolean): string {
+  return incomplete
+    ? ' Part of this receipt was never read, so it may still have been on it - try reading the receipt again.'
+    : '';
+}
+
+function notFound(incomplete = false): Answer {
   return {
-    text: 'I could not find that in this order. Try naming the brand, or take a photo of it.',
+    text: incomplete
+      ? `I could not find that among the lines I read.${absenceCaveat(true)}`
+      : 'I could not find that in this order. Try naming the brand, or take a photo of it.',
     itemIds: [],
     usedAi: true,
   };

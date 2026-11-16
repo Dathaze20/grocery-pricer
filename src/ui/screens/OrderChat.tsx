@@ -3,14 +3,17 @@ import { OrderImageType } from '../../core/ai-types';
 import { ask } from '../../app/conversation';
 import { readFile } from '../../app/images';
 import type { Repository } from '../../data/repository';
-import { MessageRole, type StoredMessage, type StoredOrder } from '../../data/schema';
+import { MessageRole, type StoredMessage, type StoredOrder, isIncomplete } from '../../data/schema';
 import type { Screen } from '../App';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
 import { updates } from '../updates';
 import { useUpdateHold } from '../useUpdateHold';
-import { CameraIcon, ListIcon, SendIcon, TruckIcon } from '../components/icons';
+import { CameraIcon, ListIcon, SendIcon, TruckIcon, MicIcon } from '../components/icons';
 import { providerFor } from '../services';
+import { jobs, type JobState } from '../../app/jobs';
+import { pending, type PendingQuestion } from '../../app/pending';
+import { dictationAvailable, useDictation } from '../useDictation';
 
 export function OrderChat(props: {
   repo: Repository;
@@ -22,6 +25,14 @@ export function OrderChat(props: {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [job, setJob] = useState<JobState | null>(() => jobs.stateOf(orderId));
+  const [queue, setQueue] = useState<readonly PendingQuestion[]>(() => pending.queue(orderId));
+
+  const dictation = useDictation((heard) =>
+    // Into the field, not out the door: the owner reads it and fixes it before sending.
+    setText((current) => (current.trim().length > 0 ? `${current} ${heard}` : heard)),
+  );
+  const canDictate = dictationAvailable();
 
   const bottom = useRef<HTMLDivElement>(null);
 
@@ -38,14 +49,94 @@ export function OrderChat(props: {
     void reload();
   }, [reload]);
 
+  /*
+   * Watches the receipt being read, rather than doing the reading.
+   *
+   * The work belongs to the coordinator, so this screen can be opened, left and opened again
+   * without touching it. Arriving here is what the owner does immediately after pressing the
+   * button, so in the common case this subscribes to a job that is already under way.
+   */
+  useEffect(() => jobs.subscribe(orderId, setJob), [orderId]);
+
+  // Held outside this component, so walking to the order list and back does not empty it.
+  useEffect(() => pending.subscribe(orderId, setQueue), [orderId]);
+
+  const reading = job?.kind === 'running';
+
+  /*
+   * Taken from the order, not from the job.
+   *
+   * A job lives as long as the tab does. The fact that a receipt was only half read has to
+   * outlive that - otherwise closing the app turns an incomplete order into one that looks
+   * finished, which is the quietest way for a wrong total to be trusted.
+   */
+  const incomplete = !reading && order !== null && isIncomplete(order);
+
+  // The oldest question that failed. Only one is ever shown: the queue stalls on it, so
+  // pressing the button is what moves everything behind it.
+  const stuck = queue.find((q) => pending.isBlocked(q.id)) ?? null;
+
+  useEffect(() => {
+    if (job?.kind === 'done' || job?.kind === 'failed') void reload();
+  }, [job, reload]);
+
+
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'end' });
   }, [messages]);
 
   const send = useCallback(
-    async (question: string, file?: File) => {
+    async (question: string, file?: File, options: { alreadyShown?: boolean } = {}) => {
       const trimmed = question.trim();
       if (trimmed.length === 0 && file === undefined) return;
+
+      /*
+       * Nothing is asked of the model while the receipt is still being read.
+       *
+       * The costs are not in the database yet, so an answer now would be built out of nothing -
+       * and a confidently wrong price is worse than no price at all. The question is kept,
+       * said back to the owner so they can see it was heard, and put to the model the moment
+       * the figures exist.
+       */
+      if (options.alreadyShown !== true && jobs.isRunning(orderId)) {
+        setText('');
+
+        // The photograph is written to the database now, while the page still holds it. A File
+        // is a handle to something this tab is keeping alive; leaving the screen would take
+        // the only copy of what the owner just photographed.
+        let photoId: number | null = null;
+        if (file !== undefined) {
+          const image = await readFile(file);
+          const stored = await repo.addPhoto({
+            orderId,
+            bytes: image.bytes,
+            mimeType: image.mimeType,
+            type: OrderImageType.PRODUCT_PHOTO,
+            isDeliveryPhoto: false,
+            createdAt: Date.now(),
+          });
+          photoId = stored.id;
+        }
+
+        const asked = trimmed.length > 0 ? trimmed : 'How much is this?';
+        // Written once, here, and never again: ask() is told later that it is already in the
+        // thread, so answering it does not make the question appear twice.
+        await repo.say(orderId, MessageRole.USER, asked, { photoId });
+        pending.add(orderId, asked, photoId);
+
+        // One notice for the wait, however many questions are asked during it. Repeating "I
+        // will answer this" after every question is noise, not reassurance.
+        if (pending.queue(orderId).length === 1) {
+          await repo.say(
+            orderId,
+            MessageRole.APP,
+            'I am still reading the receipt, so I do not have the costs yet. I will answer as soon as it is done.',
+          );
+        }
+        await reload();
+        return;
+      }
+
       setBusy(true);
       setText('');
       // Held by the question, not by the screen: the answer is still coming after Back.
@@ -77,6 +168,74 @@ export function OrderChat(props: {
     [repo, orderId, reload],
   );
 
+  /** Answers a question that is already written in the conversation, so it is not written again. */
+  const answerPending = useCallback(
+    async (item: PendingQuestion) => {
+      setBusy(true);
+      const release = updates.hold('blocking');
+      try {
+        const provider = await providerFor(repo);
+        const photo =
+          item.photoId === null
+            ? null
+            : await (async () => {
+                const stored = await repo.photo(item.photoId!);
+                return stored === null
+                  ? null
+                  : { id: stored.id, image: { bytes: stored.bytes, mimeType: stored.mimeType } };
+              })();
+
+        const answer = await ask(repo, provider, orderId, item.question, {
+          photo,
+          alreadyAsked: true,
+        });
+
+        // Gemini's failure is text in the thread, but it is not an answer. Completing on it
+        // would drop the question for having produced an error message.
+        if (answer.failed === true) {
+          pending.fail(orderId, item.id);
+          return;
+        }
+
+        // Only now. Everything above could throw, and a question dropped before its answer
+        // exists is a question the owner asked and will never get back.
+        pending.complete(orderId, item.id);
+      } catch {
+        // Kept, with its photograph, and left alone until the owner asks again. Claiming it
+        // back automatically would retry a failing model for as long as it keeps failing.
+        pending.fail(orderId, item.id);
+        await repo.say(
+          orderId,
+          MessageRole.APP,
+          'Something went wrong answering that. Your question is still here.',
+        );
+      } finally {
+        await reload();
+        setBusy(false);
+        release();
+      }
+    },
+    [repo, orderId, reload],
+  );
+
+  /*
+   * Answers what was asked while the reading was going on, oldest first, one at a time.
+   *
+   * Only on success. A receipt that could not be read leaves the costs absent, and the honest
+   * thing is to leave those questions unanswered and let the owner retry - inventing a price
+   * because somebody asked for one is the one failure this app cannot afford.
+   */
+  useEffect(() => {
+    if (job?.kind !== 'done' || job.result.itemCount === 0) return;
+    if (busy || queue.length === 0) return;
+
+    // Claimed, not taken: it comes off the queue only once its answer is saved.
+    const next = pending.claimNext(orderId);
+    if (next === null) return;
+    void answerPending(next);
+  }, [job, queue, busy, orderId, answerPending]);
+
+
   return (
     <div className="app">
       <TopBar
@@ -99,8 +258,75 @@ export function OrderChat(props: {
               {message.text}
             </div>
           ))}
+          {reading && (
+            <div className="bubble reply status t-sub">
+              <span className="spinner on-paper" aria-hidden="true" />
+              {job?.kind === 'running' && job.step !== 'Starting'
+                ? `${job.step}…`
+                : 'Reading your receipt…'}
+            </div>
+          )}
+
+          {job?.kind === 'done' && job.result.outcome === 'complete' && (
+            <div className="bubble reply status t-sub">
+              Receipt read - {job.result.itemCount}{' '}
+              {job.result.itemCount === 1 ? 'product' : 'products'} ready. Ask me what anything
+              costs.
+            </div>
+          )}
+
+          {incomplete && (
+            // Deliberately not a tick. Some of the receipt was not read, so the products are
+            // usable but the total is not the order, and saying "done" here would be a lie
+            // that somebody prices against.
+            <div className="bubble reply status">
+              Only part of this receipt was read. The products below are safe to use, but the
+              total is not the whole order.
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                style={{ marginTop: 'var(--sp-3)' }}
+                onClick={() => jobs.start(repo, providerFor, orderId, { reprocess: true })}
+              >
+                Read the whole receipt again
+              </button>
+            </div>
+          )}
+
+          {job !== null && job.kind !== 'running' && (job.kind === 'failed' || job.result.outcome === 'empty') && (
+            // The photographs and any approved prices are untouched, so this really is just a
+            // matter of pressing it again.
+            <div className="bubble reply status">
+              {job.result.summary}
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                style={{ marginTop: 'var(--sp-3)' }}
+                onClick={() => jobs.start(repo, providerFor, orderId, { reprocess: true })}
+              >
+                Try reading it again
+              </button>
+            </div>
+          )}
+
+          {stuck !== null && (
+            <div className="bubble reply status">
+              I could not answer “{stuck.question}”. It is still here, with anything you
+              photographed for it.
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                style={{ marginTop: 'var(--sp-3)' }}
+                disabled={busy}
+                onClick={() => pending.retry(orderId)}
+              >
+                Try answering it again
+              </button>
+            </div>
+          )}
+
           {busy && (
-            <div className="bubble reply t-sub">
+            <div className="bubble reply status t-sub">
               <span className="spinner on-paper" aria-hidden="true" />
               Thinking…
             </div>
@@ -121,7 +347,7 @@ export function OrderChat(props: {
           <input
             type="text"
             value={text}
-            placeholder="Ask about this order…"
+            placeholder={dictation.listening ? 'Listening…' : 'Ask about this order…'}
             enterKeyHint="send"
             disabled={busy}
             onChange={(event) => setText(event.target.value)}
@@ -130,6 +356,18 @@ export function OrderChat(props: {
             }}
           />
           <PhotoPickerButton disabled={busy} onPick={(file) => void send(text, file)} />
+          {canDictate && (
+            <button
+              type="button"
+              className={`icon-btn${dictation.listening ? ' listening' : ''}`}
+              disabled={busy}
+              aria-label={dictation.listening ? 'Stop listening' : 'Ask out loud'}
+              aria-pressed={dictation.listening}
+              onClick={() => (dictation.listening ? dictation.stop() : dictation.start())}
+            >
+              <MicIcon size={20} />
+            </button>
+          )}
           <button
             type="button"
             className="icon-btn send"
@@ -140,6 +378,23 @@ export function OrderChat(props: {
             <SendIcon size={20} />
           </button>
         </div>
+        {dictation.error !== null && <p className="notice warn">{dictation.error}</p>}
+
+        {job !== null && job.kind !== 'running' && job.result.timings.length > 0 && (
+          // Folded away, and durations only: no photograph, no prompt, no reply, no key,
+          // nothing off the receipt. It is here so a slow read can be described precisely
+          // instead of guessed at.
+          <details className="note">
+            <summary>How long the last reading took</summary>
+            <ul>
+              {job.result.timings.map((timing) => (
+                <li key={timing.phase}>
+                  {timing.phase}: {(timing.ms / 1000).toFixed(1)}s
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </main>
     </div>
   );
