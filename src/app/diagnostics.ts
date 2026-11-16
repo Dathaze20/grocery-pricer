@@ -24,7 +24,13 @@ export interface ProbeResult {
   readonly verdict: string;
   /** Google's own message, trimmed and with anything key-shaped removed. Empty if none. */
   readonly detail: string;
-  /** What the model replied, when it replied. Trimmed for display. */
+  /**
+   * What the model replied, trimmed for the screen.
+   *
+   * For display only. Validation runs against the whole reply, never this - truncating first
+   * and parsing second is how a successful extraction of a dozen products gets reported as
+   * invalid JSON, which is the opposite of what the reply proves.
+   */
   readonly reply: string | null;
 }
 
@@ -167,8 +173,10 @@ async function probe(options: {
   }
 
   // Delivered. Now the harder question: is what came back any use?
-  const reply = replyFrom(text);
-  const checked = options.check(reply);
+  //
+  // Judged on the whole reply. Only what is shown on screen is shortened.
+  const full = replyFrom(text);
+  const checked = options.check(full);
 
   return {
     delivered: true,
@@ -180,11 +188,24 @@ async function probe(options: {
       ? 'Worked.'
       : `Google answered (HTTP ${response.status}) but the reply is not usable: ${checked.why}`,
     detail: '',
-    reply,
+    reply: forDisplay(full),
   };
 }
 
-/** The model's own words, or a plain note when a 200 carried no text. */
+/** The screen gets a readable extract; the check already had the whole thing. */
+export const DISPLAY_LIMIT = 600;
+
+export function forDisplay(reply: string): string {
+  return reply.length <= DISPLAY_LIMIT
+    ? reply
+    : `${reply.slice(0, DISPLAY_LIMIT)}… (${reply.length} characters in all)`;
+}
+
+/**
+ * The model's own words in full, or a plain note when a 200 carried no text.
+ *
+ * Deliberately not shortened here. This is what gets validated.
+ */
 export function replyFrom(body: string): string {
   try {
     const parsed: unknown = JSON.parse(body);
@@ -196,7 +217,7 @@ export function replyFrom(body: string): string {
       .map((part) => (typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : ''))
       .join('')
       .trim();
-    return joined.length > 0 ? joined.slice(0, 600) : '(a reply with no content)';
+    return joined.length > 0 ? joined : '(a reply with no content)';
   } catch {
     return '(a reply that was not JSON)';
   }
@@ -215,10 +236,13 @@ export async function probeText(apiKey: string, model: string, fetchImpl?: typeo
     model,
     prompt: 'Reply with exactly: OK',
     check: (reply) => {
+      // Exact, once punctuation and whitespace are stripped. `includes` let "LOOK", "OKAY"
+      // and any sentence containing the letters through, which is not a model following a
+      // two-word instruction - it is a model doing something else that happened to match.
       const said = reply.trim().toUpperCase().replace(/[^A-Z]/g, '');
-      return said.includes('OK')
+      return said === 'OK'
         ? { usable: true, why: '' }
-        : { usable: false, why: 'it did not say OK.' };
+        : { usable: false, why: 'it did not reply with exactly OK.' };
     },
     fetchImpl,
   });

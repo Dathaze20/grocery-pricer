@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { probeExtraction, probeImage, probeText, replyFrom } from '../diagnostics';
+import {
+  DISPLAY_LIMIT,
+  forDisplay,
+  probeExtraction,
+  probeImage,
+  probeText,
+  replyFrom,
+} from '../diagnostics';
 
 const KEY = 'AIzaSyEXAMPLEEXAMPLEEXAMPLEEXAMPLE1234';
 const MODEL = 'gemini-3.8-flash';
@@ -195,7 +202,7 @@ describe('a 200 is not the same thing as a useful answer', () => {
     expect(result.status).toBe(200);
     expect(result.ok).toBe(false);
     expect(result.verdict).toContain('not usable');
-    expect(result.verdict).toContain('did not say OK');
+    expect(result.verdict).toContain('did not reply with exactly OK');
   });
 
   it('test 1 accepts OK however it is punctuated', async () => {
@@ -282,5 +289,77 @@ describe('a 200 is not the same thing as a useful answer', () => {
 
     // A content failure is not a reason to ask again. That is the owner's call.
     expect(fetchImpl.mock.calls).toHaveLength(1);
+  });
+});
+
+describe('a long but perfectly good extraction', () => {
+  /** Eleven products, the size of a real Jetro order - comfortably past any display limit. */
+  function elevenProducts(): string {
+    const names = [
+      'HELLM MAYONNAISE 8Z',
+      'EXMP CORN OIL 1GAL',
+      'MEOW MIX ORIG 18Z',
+      'PEDIGREE ADULT CR 18LB',
+      'RAW JUL CORN 327',
+      'RAW OIL VEGETABLE 242',
+      'GOLDN GRN CHK TAN 3.22',
+      'SNOWY WHT BF BACON 13Z',
+      'CASP SLT PRETZEL 2.7Z',
+      'LIPTN ICE TEA MIX 4Z',
+      'DEL MNT FRUIT CUP 12PK',
+    ];
+    return JSON.stringify({
+      items: names.map((name, i) => ({
+        name,
+        casePrice: `${(20 + i).toFixed(2)}`,
+        quantity: (i % 3) + 1,
+        discount: i % 4 === 0 ? '2.00' : null,
+      })),
+    });
+  }
+
+  it('validates the whole reply, not the part that fits on the screen', async () => {
+    const payload = elevenProducts();
+    // The bug: the reply was cut to 600 characters and then parsed, so a good extraction of a
+    // real order came back as "the reply was not JSON" - failing precisely when it worked.
+    expect(payload.length).toBeGreaterThan(600);
+
+    const result = await probeExtraction(KEY, MODEL, IMAGE, fetchReturning(reply(payload)));
+
+    expect(result.delivered).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.verdict).toBe('Worked.');
+  });
+
+  it('still shows the owner a readable extract, and says how much there was', async () => {
+    const payload = elevenProducts();
+    const result = await probeExtraction(KEY, MODEL, IMAGE, fetchReturning(reply(payload)));
+
+    expect(result.reply!.length).toBeLessThan(payload.length);
+    expect(result.reply).toContain('HELLM MAYONNAISE');
+    expect(result.reply).toContain(`${payload.length} characters in all`);
+  });
+
+  it('leaves a short reply exactly as it came', () => {
+    expect(forDisplay('OK')).toBe('OK');
+    expect(forDisplay('x'.repeat(DISPLAY_LIMIT))).toHaveLength(DISPLAY_LIMIT);
+    expect(forDisplay('x'.repeat(DISPLAY_LIMIT + 1))).toContain('characters in all');
+  });
+});
+
+describe('OK means OK', () => {
+  it('refuses a word that merely contains the letters', async () => {
+    for (const said of ['LOOK', 'OKAY', 'Looks ok to me', 'BOOK']) {
+      const result = await probeText(KEY, MODEL, fetchReturning(reply(said)));
+      expect(result.ok, said).toBe(false);
+      expect(result.delivered, said).toBe(true);
+    }
+  });
+
+  it('still accepts OK however it is punctuated', async () => {
+    for (const said of ['OK', 'ok', ' OK. ', '"OK"', 'OK\n', 'o.k.']) {
+      const result = await probeText(KEY, MODEL, fetchReturning(reply(said)));
+      expect(result.ok, said).toBe(true);
+    }
   });
 });
