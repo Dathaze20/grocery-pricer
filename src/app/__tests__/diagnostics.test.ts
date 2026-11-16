@@ -181,3 +181,106 @@ describe('the connection check reports what actually happened', () => {
     expect(replyFrom('{}')).toBe('(a reply with no content)');
   });
 });
+
+describe('a 200 is not the same thing as a useful answer', () => {
+  it('test 1 fails when the model answers something other than OK', async () => {
+    const result = await probeText(
+      KEY,
+      MODEL,
+      fetchReturning(reply('I am a large language model and I am happy to help!')),
+    );
+
+    // Delivered perfectly. Useless for the one thing it was asked.
+    expect(result.delivered).toBe(true);
+    expect(result.status).toBe(200);
+    expect(result.ok).toBe(false);
+    expect(result.verdict).toContain('not usable');
+    expect(result.verdict).toContain('did not say OK');
+  });
+
+  it('test 1 accepts OK however it is punctuated', async () => {
+    for (const said of ['OK', 'ok', ' OK. ', '"OK"', 'OK\n']) {
+      const result = await probeText(KEY, MODEL, fetchReturning(reply(said)));
+      expect(result.ok, said).toBe(true);
+    }
+  });
+
+  it('test 1 fails on a 200 that carried no text at all', async () => {
+    const empty = new Response(JSON.stringify({ candidates: [] }), { status: 200 });
+    const result = await probeText(KEY, MODEL, fetchReturning(empty));
+
+    expect(result.delivered).toBe(true);
+    expect(result.ok).toBe(false);
+  });
+
+  it('test 2 fails when the model says it cannot read the photograph', async () => {
+    const result = await probeImage(
+      KEY,
+      MODEL,
+      IMAGE,
+      fetchReturning(reply("I'm sorry, I cannot read any text in this image.")),
+    );
+
+    expect(result.delivered).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.verdict).toContain('could not read');
+  });
+
+  it('test 2 passes on a real product name', async () => {
+    const result = await probeImage(KEY, MODEL, IMAGE, fetchReturning(reply('HELLM MAYONNAISE 8Z')));
+
+    expect(result.ok).toBe(true);
+    expect(result.reply).toBe('HELLM MAYONNAISE 8Z');
+  });
+
+  it('test 3 fails on prose, on missing items, and on an empty list', async () => {
+    const prose = await probeExtraction(KEY, MODEL, IMAGE, fetchReturning(reply('Here are the items:')));
+    expect(prose.delivered).toBe(true);
+    expect(prose.ok).toBe(false);
+    expect(prose.verdict).toContain('not JSON');
+
+    const wrongShape = await probeExtraction(KEY, MODEL, IMAGE, fetchReturning(reply('{"lines":[]}')));
+    expect(wrongShape.ok).toBe(false);
+    expect(wrongShape.verdict).toContain('no items array');
+
+    const nothingFound = await probeExtraction(KEY, MODEL, IMAGE, fetchReturning(reply('{"items":[]}')));
+    expect(nothingFound.delivered).toBe(true);
+    expect(nothingFound.ok).toBe(false);
+    expect(nothingFound.verdict).toContain('no lines');
+  });
+
+  it('test 3 passes when lines actually come back', async () => {
+    const result = await probeExtraction(
+      KEY,
+      MODEL,
+      IMAGE,
+      fetchReturning(
+        reply('{"items":[{"name":"HELLM MAYO","casePrice":"24.00","quantity":1,"discount":null}]}'),
+      ),
+    );
+
+    expect(result.delivered).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.reply).toContain('HELLM MAYO');
+  });
+
+  it('a transport failure is never reported as delivered', async () => {
+    const result = await probeText(
+      KEY,
+      MODEL,
+      fetchReturning(googleError(503, 'UNAVAILABLE', 'overloaded')),
+    );
+
+    expect(result.delivered).toBe(false);
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(503);
+  });
+
+  it('still sends exactly one request when the reply is unusable', async () => {
+    const fetchImpl = fetchReturning(reply('something else entirely'));
+    await probeText(KEY, MODEL, fetchImpl);
+
+    // A content failure is not a reason to ask again. That is the owner's call.
+    expect(fetchImpl.mock.calls).toHaveLength(1);
+  });
+});

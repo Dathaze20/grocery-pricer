@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { GEMINI_API_KEY_URL, configuredModel } from '../../ai/model';
+import { GEMINI_API_KEY_URL, modelChain } from '../../ai/model';
 import { probeExtraction, probeImage, probeText, type ProbeResult } from '../../app/diagnostics';
 import { readFile, toImagePart } from '../../app/images';
 import { listModels, type AvailableModel } from '../../ai/gemini';
@@ -43,9 +43,9 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   const [probe3, setProbe3] = useState<ProbeResult | null>(null);
   const probeFile = useRef<HTMLInputElement>(null);
   const probeStep = useRef(1);
-
-  // Whatever the app would actually use right now, so the check tests the real thing.
-  const probeModel = configuredModel(model);
+  // Kept so the second and third tests read the same picture without being asked for it twice.
+  const probePhoto = useRef<File | null>(null);
+  const [probeModel, setProbeModel] = useState<string | null>(null);
   // True once the user has touched a field. Reading the stored values takes a moment on a cold
   // database, and someone who pastes their key in that moment must not have it wiped from under
   // them - which looks exactly like the app losing the key they just pasted.
@@ -59,8 +59,21 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
       if (!edited.current) setKey(stored ?? '');
     });
     void repo.apiKey().then((stored) => {
-      void repo.workingModel(stored).then((model) => setConfirmed(model !== null));
       void repo.lastAiFault(stored).then(setFault);
+      void Promise.all([repo.workingModel(stored), repo.model()]).then(
+        ([remembered, override]) => {
+          setConfirmed(remembered !== null);
+          /*
+           * The model the app would really reach for next, not a guess at it.
+           *
+           * The first version of this asked configuredModel, which knows only about a name
+           * typed in Advanced. Production starts from modelChain, which puts the model that
+           * last worked for this key ahead of the approved list - so the check could have
+           * tested a model that was not the one failing, and said so with a straight face.
+           */
+          setProbeModel(modelChain({ override, remembered })[0] ?? null);
+        },
+      );
     });
     void repo.model().then((stored) => {
       if (!edited.current) setModel(stored ?? '');
@@ -82,10 +95,6 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
     }
   }, [repo]);
 
-  const pickFor = useCallback((step: number) => {
-    probeStep.current = step;
-    probeFile.current?.click();
-  }, []);
 
   /**
    * Runs one probe. One request, one model, no repeats.
@@ -96,6 +105,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   const runProbe = useCallback(
     async (step: number, file?: File) => {
       const key = await repo.apiKey();
+      if (probeModel === null) return;
       if (key === null) {
         setToast('Save your Gemini key first');
         setTimeout(() => setToast(null), 100);
@@ -111,6 +121,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
           return;
         }
         if (file === undefined) return;
+        probePhoto.current = file;
 
         const image = await toImagePart(await readFile(file));
         if (step === 2) {
@@ -125,6 +136,17 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
     },
     [repo, probeModel],
   );
+
+  const pickFor = useCallback((step: number) => {
+    probeStep.current = step;
+    // Test 3 reads the picture test 2 already used. Choosing it twice invites choosing a
+    // different one by mistake, and then the two results are not about the same photograph.
+    if (step === 3 && probePhoto.current !== null) {
+      void runProbe(3, probePhoto.current);
+      return;
+    }
+    probeFile.current?.click();
+  }, [runProbe]);
 
   const save = useCallback(async () => {
     // An empty box is not an instruction to forget the key: pressing Save on a field that has
@@ -245,13 +267,20 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
           </p>
 
           <p className="t-cap">
-            Testing <strong>{probeModel}</strong>.
+            {probeModel === null ? (
+              'Working out which model would be used…'
+            ) : (
+              <>
+                Testing <strong>{probeModel}</strong> - the exact model Grocery Pricer would
+                reach for next with your saved key.
+              </>
+            )}
           </p>
 
           <button
             type="button"
             className="btn btn-secondary btn-block"
-            disabled={probing !== null}
+            disabled={probing !== null || probeModel === null}
             onClick={() => void runProbe(1)}
           >
             {probing === 1 ? 'Asking Gemini…' : '1. Can it answer at all? (text only)'}
@@ -264,7 +293,7 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
                 type="button"
                 className="btn btn-secondary btn-block"
                 style={{ marginTop: 'var(--sp-3)' }}
-                disabled={probing !== null}
+                disabled={probing !== null || probeModel === null}
                 onClick={() => pickFor(2)}
               >
                 {probing === 2 ? 'Asking Gemini…' : '2. Can it read one receipt photo?'}
@@ -279,10 +308,12 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
                 type="button"
                 className="btn btn-secondary btn-block"
                 style={{ marginTop: 'var(--sp-3)' }}
-                disabled={probing !== null}
+                disabled={probing !== null || probeModel === null}
                 onClick={() => pickFor(3)}
               >
-                {probing === 3 ? 'Asking Gemini…' : '3. Can it list the lines on it?'}
+                {probing === 3
+                  ? 'Asking Gemini…'
+                  : '3. Can it list the lines on that same photo?'}
               </button>
               <ProbeReport result={probe3} />
             </>
@@ -431,7 +462,13 @@ function ProbeReport(props: { result: ProbeResult | null }): JSX.Element | null 
   return (
     <div className={`notice ${result.ok ? '' : 'warn'}`} style={{ marginTop: 'var(--sp-2)' }}>
       <p style={{ margin: 0 }}>
-        <strong>{result.ok ? 'Worked' : 'Did not work'}</strong>
+        <strong>
+          {result.ok
+            ? 'Worked'
+            : result.delivered
+              ? 'Answered, but not usefully'
+              : 'Did not work'}
+        </strong>
         {result.status !== null && ` - HTTP ${result.status}`} - {(result.ms / 1000).toFixed(1)}s
       </p>
       <p className="t-cap" style={{ marginTop: 'var(--sp-1)' }}>

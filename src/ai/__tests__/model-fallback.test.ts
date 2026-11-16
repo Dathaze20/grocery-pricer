@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GeminiClient, anotherModelMightWork } from '../gemini';
-import { APPROVED_GEMINI_MODELS, DEFAULT_GEMINI_MODEL, MAX_MODEL_ATTEMPTS, modelChain } from '../model';
+import { APPROVED_GEMINI_MODELS, DEFAULT_GEMINI_MODEL, MAX_MODEL_ATTEMPTS, modelChain, configuredModel } from '../model';
 import type { AiError } from '../../core/ai-types';
 import { aiErrorMessage } from '../../core/ai-types';
 
@@ -401,5 +401,27 @@ describe('working through the chain for real', () => {
 
     // One request, one verdict - a model refused along the way is not a failed request.
     expect(outcomes).toEqual([null]);
+  });
+});
+
+describe('what a connection check must test', () => {
+  it('the head of the chain is what production reaches for first', () => {
+    // The bug this covers: the check asked configuredModel, which knows only about a name
+    // typed in Advanced. Production starts from modelChain, which puts the model that last
+    // worked for this key ahead of the approved list - so a check could test a model that was
+    // not the one failing, and report a clean result for the wrong thing.
+    expect(modelChain({ remembered: 'what-worked-last-time' })[0]).toBe('what-worked-last-time');
+    expect(modelChain({ override: 'typed-in-advanced', remembered: 'what-worked' })[0]).toBe(
+      'typed-in-advanced',
+    );
+    expect(modelChain({})[0]).toBe(DEFAULT_GEMINI_MODEL);
+  });
+
+  it('a remembered model outranks the default, which is the case that was being missed', () => {
+    const remembered = APPROVED_GEMINI_MODELS[1]!;
+    expect(remembered).not.toBe(DEFAULT_GEMINI_MODEL);
+    expect(modelChain({ remembered })[0]).toBe(remembered);
+    // configuredModel knows nothing of it, which is exactly why it was the wrong source.
+    expect(configuredModel(null)).toBe(DEFAULT_GEMINI_MODEL);
   });
 });

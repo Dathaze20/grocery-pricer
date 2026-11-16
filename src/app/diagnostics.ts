@@ -4,6 +4,16 @@ import type { ImagePart } from '../ai/gemini';
 
 /** What one probe actually observed. Facts, not interpretation. */
 export interface ProbeResult {
+  /**
+   * Google answered with a 2xx.
+   *
+   * Kept apart from `ok` on purpose. A 200 means the request arrived, was accepted and came
+   * back - it says nothing about whether the model did the job. A reply that is empty, or
+   * refuses, or is not the JSON that was asked for, is a successful delivery of a useless
+   * answer, and reporting that as success is how a diagnostic ends up lying.
+   */
+  readonly delivered: boolean;
+  /** Delivered AND the reply is actually usable for what this probe asked. */
   readonly ok: boolean;
   /** The exact model name that was called. One model, never a fallback chain. */
   readonly model: string;
@@ -76,12 +86,16 @@ function detailFrom(body: string): string {
  * not: a diagnostic that quietly succeeds on a different model than the one it names tells the
  * owner something false, and a diagnostic that retries cannot say what a single attempt costs.
  */
+/** Whether the reply does what the probe asked for, and if not, why not. */
+export type ReplyCheck = (reply: string) => { usable: boolean; why: string };
+
 async function probe(options: {
   apiKey: string;
   model: string;
   prompt: string;
   images?: readonly ImagePart[];
   json?: boolean;
+  check: ReplyCheck;
   fetchImpl?: typeof fetch;
 }): Promise<ProbeResult> {
   const { apiKey, model, prompt } = options;
@@ -123,6 +137,7 @@ async function probe(options: {
     clearTimeout(timer);
     const timedOut = controller.signal.aborted;
     return {
+      delivered: false,
       ok: false,
       model,
       status: null,
@@ -140,6 +155,7 @@ async function probe(options: {
 
   if (!response.ok) {
     return {
+      delivered: false,
       ok: false,
       model,
       status: response.status,
@@ -150,14 +166,21 @@ async function probe(options: {
     };
   }
 
+  // Delivered. Now the harder question: is what came back any use?
+  const reply = replyFrom(text);
+  const checked = options.check(reply);
+
   return {
-    ok: true,
+    delivered: true,
+    ok: checked.usable,
     model,
     status: response.status,
     ms,
-    verdict: verdictFor(response.status, false),
+    verdict: checked.usable
+      ? 'Worked.'
+      : `Google answered (HTTP ${response.status}) but the reply is not usable: ${checked.why}`,
     detail: '',
-    reply: replyFrom(text),
+    reply,
   };
 }
 
@@ -179,9 +202,26 @@ export function replyFrom(body: string): string {
   }
 }
 
-/** Test 1: can this key reach this model at all? Text only, nothing attached. */
+/**
+ * Test 1: can this key reach this model at all? Text only, nothing attached.
+ *
+ * The reply has to actually say OK. A model that answers a two-word instruction with something
+ * else is not a model that is going to read a receipt, and a tick beside it would send the
+ * investigation off looking at photographs.
+ */
 export async function probeText(apiKey: string, model: string, fetchImpl?: typeof fetch): Promise<ProbeResult> {
-  return probe({ apiKey, model, prompt: 'Reply with exactly: OK', fetchImpl });
+  return probe({
+    apiKey,
+    model,
+    prompt: 'Reply with exactly: OK',
+    check: (reply) => {
+      const said = reply.trim().toUpperCase().replace(/[^A-Z]/g, '');
+      return said.includes('OK')
+        ? { usable: true, why: '' }
+        : { usable: false, why: 'it did not say OK.' };
+    },
+    fetchImpl,
+  });
 }
 
 /** Test 2: can it see a photograph? One picture, one short question, no production prompt. */
@@ -197,6 +237,18 @@ export async function probeImage(
     prompt:
       'This is a photograph of a wholesale receipt. Reply with only the first printed product name you can read on it, and nothing else.',
     images: [image],
+    // Something readable has to come back. "I cannot read this image" arrives as a perfectly
+    // good 200, and it is the opposite of this test passing.
+    check: (reply) => {
+      const said = reply.trim();
+      if (said.length < 2 || said.startsWith('(')) {
+        return { usable: false, why: 'it read nothing off the photograph.' };
+      }
+      if (/\b(cannot|can't|unable|no text|not able|sorry)\b/i.test(said)) {
+        return { usable: false, why: 'it said it could not read the photograph.' };
+      }
+      return { usable: true, why: '' };
+    },
     fetchImpl,
   });
 }
@@ -216,6 +268,20 @@ export async function probeExtraction(
       'Copy what is printed. Use null where something is not printed. Do not calculate anything.',
     images: [image],
     json: true,
+    // Valid JSON with the array that was asked for, and something in it. Prose that happens to
+    // mention items, or {"items":[]}, is not an extraction.
+    check: (reply) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(reply);
+      } catch {
+        return { usable: false, why: 'the reply was not JSON.' };
+      }
+      const items = (parsed as { items?: unknown })?.items;
+      if (!Array.isArray(items)) return { usable: false, why: 'the JSON had no items array.' };
+      if (items.length === 0) return { usable: false, why: 'it found no lines on the receipt.' };
+      return { usable: true, why: '' };
+    },
     fetchImpl,
   });
 }
