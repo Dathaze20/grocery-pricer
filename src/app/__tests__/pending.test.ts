@@ -38,11 +38,47 @@ describe('questions asked while the receipt is still being read', () => {
     const claimed = pending.claimNext(ORDER);
     expect(claimed?.id).toBe(entry.id);
 
-    // Answering threw. The question must still be here to try again.
-    pending.release(entry.id);
+    // Answering threw. The question must still be here, photograph and all.
+    pending.fail(ORDER, entry.id);
     expect(pending.queue(ORDER)).toHaveLength(1);
     expect(pending.queue(ORDER)[0]?.photoId).toBe(42);
+
+    // And it is NOT picked up again on its own - that is the retry loop.
+    expect(pending.claimNext(ORDER)).toBeNull();
+    expect(pending.claimNext(ORDER)).toBeNull();
+
+    // Only an explicit retry frees it.
+    pending.retry(ORDER);
     expect(pending.claimNext(ORDER)?.id).toBe(entry.id);
+  });
+
+  it('a failed question stalls the queue rather than being stepped over', () => {
+    const first = pending.add(ORDER, 'first', null);
+    pending.add(ORDER, 'second', null);
+
+    pending.claimNext(ORDER);
+    pending.fail(ORDER, first.id);
+
+    // The second question is not answered ahead of the first: order is the promise.
+    expect(pending.claimNext(ORDER)).toBeNull();
+    expect(pending.queue(ORDER).map((q) => q.question)).toEqual(['first', 'second']);
+
+    pending.retry(ORDER);
+    expect(pending.claimNext(ORDER)?.question).toBe('first');
+  });
+
+  it('a retry that works clears the block for good', () => {
+    const entry = pending.add(ORDER, 'only once', null);
+    pending.claimNext(ORDER);
+    pending.fail(ORDER, entry.id);
+    expect(pending.isBlocked(entry.id)).toBe(true);
+
+    pending.retry(ORDER);
+    pending.claimNext(ORDER);
+    pending.complete(ORDER, entry.id);
+
+    expect(pending.isBlocked(entry.id)).toBe(false);
+    expect(pending.queue(ORDER)).toHaveLength(0);
   });
 
   it('will not let the same question be answered twice at once', () => {

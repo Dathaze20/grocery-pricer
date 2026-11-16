@@ -29,6 +29,14 @@ export interface Answer {
   readonly itemIds: readonly number[];
   /** True when a Gemini call was actually made to produce this. */
   readonly usedAi: boolean;
+  /**
+   * True when this text is Gemini's failure rather than an answer.
+   *
+   * The two read alike in the chat - both are a sentence from the app - but they are not the
+   * same thing at all. A question answered has been dealt with; a question that produced an
+   * error has not, and treating the second as the first quietly throws the question away.
+   */
+  readonly failed?: boolean;
 }
 
 /**
@@ -125,7 +133,7 @@ async function resolve(
   );
 
   if (!resolution.ok) {
-    return { text: aiErrorMessage(resolution.error), itemIds: [], usedAi: true };
+    return { text: aiErrorMessage(resolution.error), itemIds: [], usedAi: true, failed: true };
   }
   return applyResolution(repo, engine, stored, resolution.value);
 }
@@ -304,7 +312,9 @@ async function identifyFromPhoto(
 ): Promise<Answer> {
   const part = await toImagePart(photo.image);
   const result = await provider.identifyProducts({ photoId: photo.id, ...part });
-  if (!result.ok) return { text: aiErrorMessage(result.error), itemIds: [], usedAi: true };
+  if (!result.ok) {
+    return { text: aiErrorMessage(result.error), itemIds: [], usedAi: true, failed: true };
+  }
 
   const found = result.value.products;
   if (found.length === 0) {

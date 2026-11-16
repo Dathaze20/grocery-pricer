@@ -29,6 +29,15 @@ class PendingQuestions {
   private readonly queues = new Map<number, PendingQuestion[]>();
   private readonly listeners = new Map<number, Set<Listener>>();
   private readonly inFlight = new Set<number>();
+  /**
+   * Questions whose answer failed, waiting for the owner to ask again.
+   *
+   * Without this the screen simply claims the question back the moment it stops being busy,
+   * and a model that is refusing every call is asked again, and again, with photographs
+   * attached - a loop nobody started, spending an allowance nobody agreed to spend. Nothing
+   * leaves this set until somebody presses a button.
+   */
+  private readonly blocked = new Set<number>();
   private nextId = 1;
 
   queue(orderId: number): readonly PendingQuestion[] {
@@ -55,6 +64,10 @@ class PendingQuestions {
   claimNext(orderId: number): PendingQuestion | null {
     const first = (this.queues.get(orderId) ?? [])[0];
     if (first === undefined || this.inFlight.has(first.id)) return null;
+    // A question that has already failed is not picked up again on its own. The order is
+    // kept: the queue stalls on it rather than stepping over it, so answers cannot arrive
+    // out of the order they were asked in.
+    if (this.blocked.has(first.id)) return null;
     this.inFlight.add(first.id);
     return first;
   }
@@ -62,14 +75,32 @@ class PendingQuestions {
   /** The answer is saved. Now it can go. */
   complete(orderId: number, id: number): void {
     this.inFlight.delete(id);
+    this.blocked.delete(id);
     const remaining = (this.queues.get(orderId) ?? []).filter((q) => q.id !== id);
     this.queues.set(orderId, remaining);
     this.publish(orderId);
   }
 
-  /** Answering failed. The question keeps its place, and its photograph is still stored. */
-  release(id: number): void {
+  /**
+   * Answering failed. The question keeps its place and waits to be asked again, by hand.
+   *
+   * Deliberately not the same as finishing. The question is still there, its photograph is
+   * still in the database, and nothing will touch it until `retry` is called.
+   */
+  fail(orderId: number, id: number): void {
     this.inFlight.delete(id);
+    this.blocked.add(id);
+    this.publish(orderId);
+  }
+
+  /** The owner asked again. Only this clears a block. */
+  retry(orderId: number): void {
+    for (const entry of this.queue(orderId)) this.blocked.delete(entry.id);
+    this.publish(orderId);
+  }
+
+  isBlocked(id: number): boolean {
+    return this.blocked.has(id);
   }
 
   isInFlight(id: number): boolean {
@@ -78,7 +109,10 @@ class PendingQuestions {
 
   clear(orderId: number): void {
     if ((this.queues.get(orderId) ?? []).length === 0) return;
-    for (const entry of this.queues.get(orderId) ?? []) this.inFlight.delete(entry.id);
+    for (const entry of this.queues.get(orderId) ?? []) {
+      this.inFlight.delete(entry.id);
+      this.blocked.delete(entry.id);
+    }
     this.queues.set(orderId, []);
     this.publish(orderId);
   }

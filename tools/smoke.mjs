@@ -223,10 +223,13 @@ async function main() {
     // the change, so the test asserts it rather than waiting the wait away.
     await page.waitForSelector('.chat', { timeout: 5000 });
     check('the chat opens immediately, without waiting for the receipt', true);
-    check(
-      'and says what it is doing while it reads',
-      (await page.locator('text=/Reading your receipt|Reading photo/').count()) > 0,
-    );
+    // Waited for, not sampled: the progress line changes as the work moves, so looking once
+    // at an arbitrary moment is a race, and a test that races is worse than no test.
+    const sawProgress = await page
+      .waitForSelector('.bubble.status .spinner', { timeout: 15000 })
+      .then(() => true)
+      .catch(() => false);
+    check('and says what it is doing while it reads', sawProgress);
     check(
       'with the question box usable while it reads',
       await page.isEnabled('input[placeholder*="Ask about"]'),

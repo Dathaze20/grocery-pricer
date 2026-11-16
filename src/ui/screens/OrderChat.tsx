@@ -72,6 +72,10 @@ export function OrderChat(props: {
    */
   const incomplete = !reading && order !== null && isIncomplete(order);
 
+  // The oldest question that failed. Only one is ever shown: the queue stalls on it, so
+  // pressing the button is what moves everything behind it.
+  const stuck = queue.find((q) => pending.isBlocked(q.id)) ?? null;
+
   useEffect(() => {
     if (job?.kind === 'done' || job?.kind === 'failed') void reload();
   }, [job, reload]);
@@ -181,18 +185,29 @@ export function OrderChat(props: {
                   : { id: stored.id, image: { bytes: stored.bytes, mimeType: stored.mimeType } };
               })();
 
-        await ask(repo, provider, orderId, item.question, { photo, alreadyAsked: true });
+        const answer = await ask(repo, provider, orderId, item.question, {
+          photo,
+          alreadyAsked: true,
+        });
+
+        // Gemini's failure is text in the thread, but it is not an answer. Completing on it
+        // would drop the question for having produced an error message.
+        if (answer.failed === true) {
+          pending.fail(orderId, item.id);
+          return;
+        }
+
         // Only now. Everything above could throw, and a question dropped before its answer
         // exists is a question the owner asked and will never get back.
         pending.complete(orderId, item.id);
       } catch {
-        // Kept, with its photograph, and said so. Silently losing it would be worse than
-        // either answering it or admitting the answer did not come.
-        pending.release(item.id);
+        // Kept, with its photograph, and left alone until the owner asks again. Claiming it
+        // back automatically would retry a failing model for as long as it keeps failing.
+        pending.fail(orderId, item.id);
         await repo.say(
           orderId,
           MessageRole.APP,
-          'Something went wrong answering that. It is still here - ask again, or press send.',
+          'Something went wrong answering that. Your question is still here.',
         );
       } finally {
         await reload();
@@ -290,6 +305,22 @@ export function OrderChat(props: {
                 onClick={() => jobs.start(repo, providerFor, orderId, { reprocess: true })}
               >
                 Try reading it again
+              </button>
+            </div>
+          )}
+
+          {stuck !== null && (
+            <div className="bubble reply status">
+              I could not answer “{stuck.question}”. It is still here, with anything you
+              photographed for it.
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                style={{ marginTop: 'var(--sp-3)' }}
+                disabled={busy}
+                onClick={() => pending.retry(orderId)}
+              >
+                Try answering it again
               </button>
             </div>
           )}
