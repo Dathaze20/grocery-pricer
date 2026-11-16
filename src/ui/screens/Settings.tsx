@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { GEMINI_API_KEY_URL } from '../../ai/model';
+import { GEMINI_API_KEY_URL, modelChain } from '../../ai/model';
+import { probeExtraction, probeImage, probeText, type ProbeResult } from '../../app/diagnostics';
+import { readFile, toImagePart } from '../../app/images';
 import { listModels, type AvailableModel } from '../../ai/gemini';
 import { aiErrorMessage } from '../../core/ai-types';
 import type { Repository } from '../../data/repository';
@@ -33,6 +35,17 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
   const [checkError, setCheckError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [fault, setFault] = useState<string | null>(null);
+
+  // The connection check. Each probe is one request, started by one press.
+  const [probing, setProbing] = useState<number | null>(null);
+  const [probe1, setProbe1] = useState<ProbeResult | null>(null);
+  const [probe2, setProbe2] = useState<ProbeResult | null>(null);
+  const [probe3, setProbe3] = useState<ProbeResult | null>(null);
+  const probeFile = useRef<HTMLInputElement>(null);
+  const probeStep = useRef(1);
+  // Kept so the second and third tests read the same picture without being asked for it twice.
+  const probePhoto = useRef<File | null>(null);
+  const [probeModel, setProbeModel] = useState<string | null>(null);
   // True once the user has touched a field. Reading the stored values takes a moment on a cold
   // database, and someone who pastes their key in that moment must not have it wiped from under
   // them - which looks exactly like the app losing the key they just pasted.
@@ -46,8 +59,21 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
       if (!edited.current) setKey(stored ?? '');
     });
     void repo.apiKey().then((stored) => {
-      void repo.workingModel(stored).then((model) => setConfirmed(model !== null));
       void repo.lastAiFault(stored).then(setFault);
+      void Promise.all([repo.workingModel(stored), repo.model()]).then(
+        ([remembered, override]) => {
+          setConfirmed(remembered !== null);
+          /*
+           * The model the app would really reach for next, not a guess at it.
+           *
+           * The first version of this asked configuredModel, which knows only about a name
+           * typed in Advanced. Production starts from modelChain, which puts the model that
+           * last worked for this key ahead of the approved list - so the check could have
+           * tested a model that was not the one failing, and said so with a straight face.
+           */
+          setProbeModel(modelChain({ override, remembered })[0] ?? null);
+        },
+      );
     });
     void repo.model().then((stored) => {
       if (!edited.current) setModel(stored ?? '');
@@ -68,6 +94,59 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
       setChecking(false);
     }
   }, [repo]);
+
+
+  /**
+   * Runs one probe. One request, one model, no repeats.
+   *
+   * The photograph is read into memory and sent. It is never written to the database, so this
+   * cannot add to, change or delete anything in the shop's existing orders or photographs.
+   */
+  const runProbe = useCallback(
+    async (step: number, file?: File) => {
+      const key = await repo.apiKey();
+      if (probeModel === null) return;
+      if (key === null) {
+        setToast('Save your Gemini key first');
+        setTimeout(() => setToast(null), 100);
+        return;
+      }
+
+      setProbing(step);
+      try {
+        if (step === 1) {
+          setProbe1(await probeText(key, probeModel));
+          setProbe2(null);
+          setProbe3(null);
+          return;
+        }
+        if (file === undefined) return;
+        probePhoto.current = file;
+
+        const image = await toImagePart(await readFile(file));
+        if (step === 2) {
+          setProbe2(await probeImage(key, probeModel, image));
+          setProbe3(null);
+        } else {
+          setProbe3(await probeExtraction(key, probeModel, image));
+        }
+      } finally {
+        setProbing(null);
+      }
+    },
+    [repo, probeModel],
+  );
+
+  const pickFor = useCallback((step: number) => {
+    probeStep.current = step;
+    // Test 3 reads the picture test 2 already used. Choosing it twice invites choosing a
+    // different one by mistake, and then the two results are not about the same photograph.
+    if (step === 3 && probePhoto.current !== null) {
+      void runProbe(3, probePhoto.current);
+      return;
+    }
+    probeFile.current?.click();
+  }, [runProbe]);
 
   const save = useCallback(async () => {
     // An empty box is not an instruction to forget the key: pressing Save on a field that has
@@ -177,6 +256,80 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
             and how much you use it. A key on a project with no billing stops at the free
             allowance instead of charging you. Check your usage in Google AI Studio.
           </p>
+        </details>
+
+        <details className="note">
+          <summary>Advanced: check the Gemini connection</summary>
+          <p>
+            Three requests, in order, each one only after the one before it worked. Nothing runs
+            until you press a button, and each press sends exactly one request to one model - no
+            retries and no falling back to a different model, so what you see is what happened.
+          </p>
+
+          <p className="t-cap">
+            {probeModel === null ? (
+              'Working out which model would be used…'
+            ) : (
+              <>
+                Testing <strong>{probeModel}</strong> - the exact model Grocery Pricer would
+                reach for next with your saved key.
+              </>
+            )}
+          </p>
+
+          <button
+            type="button"
+            className="btn btn-secondary btn-block"
+            disabled={probing !== null || probeModel === null}
+            onClick={() => void runProbe(1)}
+          >
+            {probing === 1 ? 'Asking Gemini…' : '1. Can it answer at all? (text only)'}
+          </button>
+          <ProbeReport result={probe1} />
+
+          {probe1?.ok === true && (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                style={{ marginTop: 'var(--sp-3)' }}
+                disabled={probing !== null || probeModel === null}
+                onClick={() => pickFor(2)}
+              >
+                {probing === 2 ? 'Asking Gemini…' : '2. Can it read one receipt photo?'}
+              </button>
+              <ProbeReport result={probe2} />
+            </>
+          )}
+
+          {probe2?.ok === true && (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                style={{ marginTop: 'var(--sp-3)' }}
+                disabled={probing !== null || probeModel === null}
+                onClick={() => pickFor(3)}
+              >
+                {probing === 3
+                  ? 'Asking Gemini…'
+                  : '3. Can it list the lines on that same photo?'}
+              </button>
+              <ProbeReport result={probe3} />
+            </>
+          )}
+
+          <input
+            ref={probeFile}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (file !== undefined) void runProbe(probeStep.current, file);
+            }}
+          />
         </details>
 
         <details className="note">
@@ -292,6 +445,49 @@ export function Settings(props: { repo: Repository; go: (screen: Screen) => void
         </div>
       </main>
       <Toast message={toast} />
+    </div>
+  );
+}
+
+/**
+ * What one probe saw: worked or did not, which model, which status, how long.
+ *
+ * The status is shown as a number because that is the thing worth repeating to anybody else,
+ * and the sentence beside it is so the owner does not have to know what a number means.
+ */
+function ProbeReport(props: { result: ProbeResult | null }): JSX.Element | null {
+  const { result } = props;
+  if (result === null) return null;
+
+  return (
+    <div className={`notice ${result.ok ? '' : 'warn'}`} style={{ marginTop: 'var(--sp-2)' }}>
+      <p style={{ margin: 0 }}>
+        <strong>
+          {result.ok
+            ? 'Worked'
+            : result.delivered
+              ? 'Answered, but not usefully'
+              : 'Did not work'}
+        </strong>
+        {result.status !== null && ` - HTTP ${result.status}`} - {(result.ms / 1000).toFixed(1)}s
+      </p>
+      <p className="t-cap" style={{ marginTop: 'var(--sp-1)' }}>
+        Model: {result.model}
+      </p>
+      <p style={{ marginTop: 'var(--sp-2)' }}>{result.verdict}</p>
+      {result.detail.length > 0 && (
+        <p className="t-cap" style={{ marginTop: 'var(--sp-1)' }}>
+          Google said: {result.detail}
+        </p>
+      )}
+      {result.reply !== null && (
+        <pre
+          className="t-cap"
+          style={{ marginTop: 'var(--sp-2)', whiteSpace: 'pre-wrap', overflowX: 'auto' }}
+        >
+          {result.reply}
+        </pre>
+      )}
     </div>
   );
 }
