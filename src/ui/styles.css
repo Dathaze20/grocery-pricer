@@ -727,3 +727,7 @@ button.notice { display: block; width: 100%; font: inherit; font-size: 0.9375rem
 @media (prefers-reduced-motion: reduce) {
   .icon-btn.listening { animation: none; }
 }
+
+/* A total that is only part of the purchase. Amber, not red: the figure is real, it is just
+   not the whole order. */
+.amount.price.partial { color: var(--warn); }

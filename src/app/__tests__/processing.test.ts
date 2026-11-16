@@ -6,7 +6,7 @@ import { ItemConfidence } from '../../core/models';
 import { PricingSource } from '../../core/pricing';
 import { Repository } from '../../data/repository';
 import { resetDbHandle } from '../../data/db';
-import { OrderStatus, MessageRole, type StoredPhoto } from '../../data/schema';
+import { OrderStatus, MessageRole, type StoredPhoto, isIncomplete } from '../../data/schema';
 import { OrderImageType, type AiExtractedItem } from '../../core/ai-types';
 import { processOrder } from '../processing';
 
@@ -795,5 +795,88 @@ describe('telling a complete reading from an incomplete one', () => {
     const rows = await repo.itemsFor(orderId);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.approvedPrice).toBe(Money.of('6.25').toStorage());
+  });
+});
+
+describe('an incomplete order stays incomplete after the app is closed', () => {
+  async function halfReadOrder(repo: Repository): Promise<number> {
+    const order = await repo.createOrder();
+    for (let i = 0; i < 4; i += 1) {
+      await repo.addPhoto({
+        orderId: order.id,
+        bytes: photoBytes(),
+        mimeType: 'image/jpeg',
+        type: OrderImageType.RECEIPT,
+        isDeliveryPhoto: false,
+        createdAt: Date.now() + i,
+      });
+    }
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    provider.queueFailure({ kind: 'timeout' });
+    await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
+    return order.id;
+  }
+
+  it('records the unread groups on the order itself', async () => {
+    const repo = await freshRepo();
+    const orderId = await halfReadOrder(repo);
+
+    // Read back the way the home screen reads it, not from the result object that only
+    // existed in the session that did the work.
+    const stored = (await repo.order(orderId))!;
+    expect(isIncomplete(stored)).toBe(true);
+    expect(stored.unreadPhotoGroups).toBe(1);
+    expect(stored.warnings.join(' ')).toContain('incomplete');
+  });
+
+  it('a fully read order is not marked incomplete', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    await processOrder(repo, provider, orderId);
+
+    expect(isIncomplete((await repo.order(orderId))!)).toBe(false);
+  });
+
+  it('an order saved before this existed reads as complete, with no migration', async () => {
+    const repo = await freshRepo();
+    const order = await repo.createOrder();
+
+    // Exactly the shape of a version-2 record: no such field at all.
+    const stored = (await repo.order(order.id))!;
+    expect(stored.unreadPhotoGroups).toBeUndefined();
+    expect(isIncomplete(stored)).toBe(false);
+  });
+
+  it('a successful re-read clears the incomplete mark without duplicating or losing anything', async () => {
+    const repo = await freshRepo();
+    const orderId = await halfReadOrder(repo);
+    const first = (await repo.itemsFor(orderId))[0]!;
+    await repo.approvePrice(first.id, Money.of('6.25'));
+
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'JETRO', items: [extractedItem()], warnings: [] });
+    provider.queueExtraction({ supplier: 'JETRO', items: [], warnings: [] });
+    const again = await processOrder(repo, provider, orderId, { reprocess: true });
+
+    expect(again.outcome).toBe('complete');
+    expect(isIncomplete((await repo.order(orderId))!)).toBe(false);
+
+    const rows = await repo.itemsFor(orderId);
+    expect(rows).toHaveLength(1);
+    // The owner's own decision survived the re-read.
+    expect(rows[0]!.approvedPrice).toBe(Money.of('6.25').toStorage());
+  });
+
+  it('never reports a partial total as the whole purchase', async () => {
+    const repo = await freshRepo();
+    const orderId = await halfReadOrder(repo);
+    const stored = (await repo.order(orderId))!;
+
+    // The figure is real and worth showing - it is the claim around it that must be hedged.
+    expect(stored.totalWholesaleCost).toBeGreaterThan(0);
+    expect(isIncomplete(stored)).toBe(true);
   });
 });

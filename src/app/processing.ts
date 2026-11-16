@@ -293,6 +293,9 @@ export async function processOrder(
 
   await repo.updateOrder(orderId, {
     status: OrderStatus.READY,
+    // Recorded on the order itself, not just announced in the chat. A warning that lives in a
+    // component is gone the next time the app opens, and the total outlives it.
+    unreadPhotoGroups: batchesFailed,
     supplier: validated.supplier,
     itemCount: saved.length,
     totalWholesaleCost: orderTotal.toStorage(),

@@ -3,7 +3,7 @@ import { OrderImageType } from '../../core/ai-types';
 import { ask } from '../../app/conversation';
 import { readFile } from '../../app/images';
 import type { Repository } from '../../data/repository';
-import { MessageRole, type StoredMessage, type StoredOrder } from '../../data/schema';
+import { MessageRole, type StoredMessage, type StoredOrder, isIncomplete } from '../../data/schema';
 import type { Screen } from '../App';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
@@ -62,6 +62,15 @@ export function OrderChat(props: {
   useEffect(() => pending.subscribe(orderId, setQueue), [orderId]);
 
   const reading = job?.kind === 'running';
+
+  /*
+   * Taken from the order, not from the job.
+   *
+   * A job lives as long as the tab does. The fact that a receipt was only half read has to
+   * outlive that - otherwise closing the app turns an incomplete order into one that looks
+   * finished, which is the quietest way for a wrong total to be trusted.
+   */
+  const incomplete = !reading && order !== null && isIncomplete(order);
 
   useEffect(() => {
     if (job?.kind === 'done' || job?.kind === 'failed') void reload();
@@ -173,6 +182,18 @@ export function OrderChat(props: {
               })();
 
         await ask(repo, provider, orderId, item.question, { photo, alreadyAsked: true });
+        // Only now. Everything above could throw, and a question dropped before its answer
+        // exists is a question the owner asked and will never get back.
+        pending.complete(orderId, item.id);
+      } catch {
+        // Kept, with its photograph, and said so. Silently losing it would be worse than
+        // either answering it or admitting the answer did not come.
+        pending.release(item.id);
+        await repo.say(
+          orderId,
+          MessageRole.APP,
+          'Something went wrong answering that. It is still here - ask again, or press send.',
+        );
       } finally {
         await reload();
         setBusy(false);
@@ -193,7 +214,8 @@ export function OrderChat(props: {
     if (job?.kind !== 'done' || job.result.itemCount === 0) return;
     if (busy || queue.length === 0) return;
 
-    const next = pending.takeNext(orderId);
+    // Claimed, not taken: it comes off the queue only once its answer is saved.
+    const next = pending.claimNext(orderId);
     if (next === null) return;
     void answerPending(next);
   }, [job, queue, busy, orderId, answerPending]);
@@ -238,20 +260,20 @@ export function OrderChat(props: {
             </div>
           )}
 
-          {job?.kind === 'done' && job.result.outcome === 'partial' && (
+          {incomplete && (
             // Deliberately not a tick. Some of the receipt was not read, so the products are
             // usable but the total is not the order, and saying "done" here would be a lie
             // that somebody prices against.
             <div className="bubble reply status">
-              Only part of this receipt was read. The {job.result.itemCount} products below are
-              safe to use, but the total is not the whole order.
+              Only part of this receipt was read. The products below are safe to use, but the
+              total is not the whole order.
               <button
                 type="button"
                 className="btn btn-secondary btn-block"
                 style={{ marginTop: 'var(--sp-3)' }}
                 onClick={() => jobs.start(repo, providerFor, orderId, { reprocess: true })}
               >
-                Try reading the rest
+                Read the whole receipt again
               </button>
             </div>
           )}

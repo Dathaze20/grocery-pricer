@@ -28,6 +28,7 @@ type Listener = (queue: readonly PendingQuestion[]) => void;
 class PendingQuestions {
   private readonly queues = new Map<number, PendingQuestion[]>();
   private readonly listeners = new Map<number, Set<Listener>>();
+  private readonly inFlight = new Set<number>();
   private nextId = 1;
 
   queue(orderId: number): readonly PendingQuestion[] {
@@ -43,18 +44,41 @@ class PendingQuestions {
     return entry;
   }
 
-  /** Takes the oldest question, so they are answered in the order they were asked. */
-  takeNext(orderId: number): PendingQuestion | null {
-    const existing = this.queues.get(orderId) ?? [];
-    const [first, ...rest] = existing;
-    if (first === undefined) return null;
-    this.queues.set(orderId, rest);
-    this.publish(orderId);
+  /**
+   * Claims the oldest question without removing it.
+   *
+   * Taking it off the queue before the answer exists loses it outright if answering throws -
+   * the owner's question is gone and nothing ever says so. It stays until `complete` says the
+   * answer was saved, and the claim stops a second render answering the same one at the same
+   * time.
+   */
+  claimNext(orderId: number): PendingQuestion | null {
+    const first = (this.queues.get(orderId) ?? [])[0];
+    if (first === undefined || this.inFlight.has(first.id)) return null;
+    this.inFlight.add(first.id);
     return first;
+  }
+
+  /** The answer is saved. Now it can go. */
+  complete(orderId: number, id: number): void {
+    this.inFlight.delete(id);
+    const remaining = (this.queues.get(orderId) ?? []).filter((q) => q.id !== id);
+    this.queues.set(orderId, remaining);
+    this.publish(orderId);
+  }
+
+  /** Answering failed. The question keeps its place, and its photograph is still stored. */
+  release(id: number): void {
+    this.inFlight.delete(id);
+  }
+
+  isInFlight(id: number): boolean {
+    return this.inFlight.has(id);
   }
 
   clear(orderId: number): void {
     if ((this.queues.get(orderId) ?? []).length === 0) return;
+    for (const entry of this.queues.get(orderId) ?? []) this.inFlight.delete(entry.id);
     this.queues.set(orderId, []);
     this.publish(orderId);
   }

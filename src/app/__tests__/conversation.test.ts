@@ -5,7 +5,7 @@ import { Category, ItemConfidence } from '../../core/models';
 import { PricingSource } from '../../core/pricing';
 import { resetDbHandle } from '../../data/db';
 import { Repository } from '../../data/repository';
-import { MessageRole, type StoredItem } from '../../data/schema';
+import { MessageRole, type StoredItem, OrderStatus } from '../../data/schema';
 import { ask } from '../conversation';
 
 let dbCounter = 1000;
@@ -265,5 +265,42 @@ describe('ask', () => {
 
     expect(answer.text).toContain('Corn Oil');
     expect(answer.text).not.toContain('Olive Oil');
+  });
+});
+
+describe('what may be said about a product on a half-read receipt', () => {
+  it('does not claim a product was absent when part of the receipt was never read', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+    // The order holds products, and is known to be missing part of its receipt.
+    await repo.updateOrder(orderId, { status: OrderStatus.READY, unreadPhotoGroups: 1 });
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'how much is the ketchup');
+
+    // It may say it did not find it. It may not say the shop did not buy it.
+    expect(answer.text).not.toContain('not in this order');
+    expect(answer.text.toLowerCase()).toContain('never read');
+  });
+
+  it('answers plainly about a product that is there, incomplete or not', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+    await repo.updateOrder(orderId, { status: OrderStatus.READY, unreadPhotoGroups: 1 });
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'how much is the mayonnaise');
+
+    expect(answer.text.toLowerCase()).toContain('mayonnaise');
+    // The caveat belongs on absence, not on every answer.
+    expect(answer.text.toLowerCase()).not.toContain('never read');
+  });
+
+  it('still says "not in this order" when the receipt was fully read', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [{ displayName: "Hellmann's Mayonnaise" }]);
+    await repo.updateOrder(orderId, { status: OrderStatus.READY });
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'how much is the ketchup');
+
+    expect(answer.text.toLowerCase()).not.toContain('never read');
   });
 });

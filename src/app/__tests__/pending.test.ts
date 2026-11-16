@@ -20,13 +20,47 @@ describe('questions asked while the receipt is still being read', () => {
   });
 
   it('hands them back oldest first, one at a time', () => {
-    pending.add(ORDER, 'first', null);
+    const first = pending.add(ORDER, 'first', null);
     pending.add(ORDER, 'second', null);
 
-    expect(pending.takeNext(ORDER)?.question).toBe('first');
-    expect(pending.takeNext(ORDER)?.question).toBe('second');
-    expect(pending.takeNext(ORDER)).toBeNull();
+    const claimed = pending.claimNext(ORDER);
+    expect(claimed?.question).toBe('first');
+    // Still on the queue: it has been claimed, not answered.
+    expect(pending.queue(ORDER)).toHaveLength(2);
+
+    pending.complete(ORDER, first.id);
+    expect(pending.claimNext(ORDER)?.question).toBe('second');
+  });
+
+  it('keeps a question whose answer failed, photograph and all', () => {
+    const entry = pending.add(ORDER, 'how much is this', 42);
+
+    const claimed = pending.claimNext(ORDER);
+    expect(claimed?.id).toBe(entry.id);
+
+    // Answering threw. The question must still be here to try again.
+    pending.release(entry.id);
+    expect(pending.queue(ORDER)).toHaveLength(1);
+    expect(pending.queue(ORDER)[0]?.photoId).toBe(42);
+    expect(pending.claimNext(ORDER)?.id).toBe(entry.id);
+  });
+
+  it('will not let the same question be answered twice at once', () => {
+    pending.add(ORDER, 'only once please', null);
+
+    expect(pending.claimNext(ORDER)).not.toBeNull();
+    // A second render while the first answer is still in flight gets nothing.
+    expect(pending.claimNext(ORDER)).toBeNull();
+  });
+
+  it('removes a question only once its answer is saved', () => {
+    const entry = pending.add(ORDER, 'first', null);
+    pending.claimNext(ORDER);
+    expect(pending.queue(ORDER)).toHaveLength(1);
+
+    pending.complete(ORDER, entry.id);
     expect(pending.queue(ORDER)).toHaveLength(0);
+    expect(pending.isInFlight(entry.id)).toBe(false);
   });
 
   it('remembers a photograph by its row, not by a handle the page is holding', () => {
@@ -54,9 +88,10 @@ describe('questions asked while the receipt is still being read', () => {
     const sizes: number[] = [];
     const stop = pending.subscribe(ORDER, (q) => sizes.push(q.length));
 
-    pending.add(ORDER, 'one', null);
+    const one = pending.add(ORDER, 'one', null);
     pending.add(ORDER, 'two', null);
-    pending.takeNext(ORDER);
+    pending.claimNext(ORDER);
+    pending.complete(ORDER, one.id);
     stop();
 
     expect(sizes).toEqual([0, 1, 2, 1]);
