@@ -259,3 +259,119 @@ describe('finding a product again', () => {
     expect(Money.fromStorage(history[1]!.unitCost!).format()).toBe('$1.10');
   });
 });
+
+describe('an abbreviation must not merge two different packs', () => {
+  let repo: Repository;
+  beforeEach(async () => {
+    repo = await freshRepo();
+  });
+
+  it('keeps two sizes apart even when the receipt prints the same shorthand', async () => {
+    const small = await repo.findOrCreateProduct({
+      displayName: "Hellmann's Mayonnaise",
+      size: '8 OZ',
+      upc: '012345678905',
+    });
+    // Seen again with its barcode printed, which is what proves the abbreviation is its.
+    const learned = await repo.findOrCreateProduct({
+      displayName: "Hellmann's Mayonnaise",
+      size: '8 OZ',
+      upc: '012345678905',
+      receiptName: 'HELLM MAYO',
+    });
+    expect(learned.id).toBe(small.id);
+    expect(learned.aliases).toContain('HELLM MAYO');
+
+    // A later delivery of the big jar, printed with the very same shorthand.
+    const large = await repo.findOrCreateProduct({
+      displayName: "Hellmann's Mayonnaise",
+      size: '40 OZ',
+      upc: null,
+      receiptName: 'HELLM MAYO',
+    });
+
+    // Two products. Sharing one would give the 40oz the 8oz's approved selling price.
+    expect(large.id).not.toBe(small.id);
+    expect(large.size).toBe('40 OZ');
+    expect((await repo.findOrCreateProduct({
+      displayName: "Hellmann's Mayonnaise",
+      size: '8 OZ',
+      upc: null,
+      receiptName: 'HELLM MAYO',
+    })).id).toBe(small.id);
+  });
+
+  it('keeps two variants apart under a shared abbreviation', async () => {
+    const lemon = await repo.findOrCreateProduct({
+      displayName: 'Example Dish Soap',
+      size: '25 OZ',
+      variant: 'Lemon',
+      upc: '012345678905',
+    });
+    await repo.findOrCreateProduct({
+      displayName: 'Example Dish Soap',
+      size: '25 OZ',
+      variant: 'Lemon',
+      upc: '012345678905',
+      receiptName: 'EXMP DISH SOAP',
+    });
+    const lavender = await repo.findOrCreateProduct({
+      displayName: 'Example Dish Soap',
+      size: '25 OZ',
+      variant: 'Lavender',
+      upc: null,
+      receiptName: 'EXMP DISH SOAP',
+    });
+
+    expect(lavender.id).not.toBe(lemon.id);
+  });
+
+  it('still finds the product when the receipt prints no size at all', async () => {
+    // The abbreviation was proved by a barcode. A line that simply does not say the size is
+    // not a reason to throw that away and start a second product.
+    const created = await repo.findOrCreateProduct({
+      displayName: 'Example Evaporated Milk',
+      size: '12 OZ',
+      upc: '012345678905',
+    });
+    await repo.findOrCreateProduct({
+      displayName: 'Example Evaporated Milk',
+      size: '12 OZ',
+      upc: '012345678905',
+      receiptName: 'EXMP EVAP MILK',
+    });
+
+    const again = await repo.findOrCreateProduct({
+      displayName: 'EXMP EVAP MILK',
+      size: null,
+      upc: null,
+      receiptName: 'EXMP EVAP MILK',
+    });
+
+    expect(again.id).toBe(created.id);
+  });
+
+  it('ignores spacing and case when deciding whether sizes disagree', async () => {
+    const created = await repo.findOrCreateProduct({
+      displayName: 'Example Evaporated Milk',
+      size: '12 OZ',
+      upc: '012345678905',
+    });
+    await repo.findOrCreateProduct({
+      displayName: 'Example Evaporated Milk',
+      size: '12 OZ',
+      upc: '012345678905',
+      receiptName: 'EXMP EVAP MILK',
+    });
+
+    const again = await repo.findOrCreateProduct({
+      displayName: 'EXMP EVAP MILK',
+      size: ' 12 oz ',
+      upc: null,
+      receiptName: 'EXMP EVAP MILK',
+    });
+
+    // The same pack written two ways is one product, not two.
+    expect(again.id).toBe(created.id);
+  });
+});

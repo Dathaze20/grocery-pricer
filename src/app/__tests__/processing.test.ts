@@ -880,3 +880,98 @@ describe('an incomplete order stays incomplete after the app is closed', () => {
     expect(isIncomplete(stored)).toBe(true);
   });
 });
+
+describe('three ways a receipt can be miscounted', () => {
+  it('keeps sizes apart, keeps repeated cases, and folds an overlap into one', async () => {
+    const repo = await freshRepo();
+    const order = await repo.createOrder();
+    const photoA = await repo.addPhoto({
+      orderId: order.id,
+      bytes: photoBytes(),
+      mimeType: 'image/jpeg',
+      type: OrderImageType.RECEIPT,
+      isDeliveryPhoto: false,
+      createdAt: 1,
+    });
+    const photoB = await repo.addPhoto({
+      orderId: order.id,
+      bytes: photoBytes(),
+      mimeType: 'image/jpeg',
+      type: OrderImageType.RECEIPT,
+      isDeliveryPhoto: false,
+      createdAt: 2,
+    });
+
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [
+        // Two sizes under the one shorthand the receipt prints for both.
+        extractedItem({
+          rawName: 'HELLM MAYO',
+          canonicalName: "Hellmann's Mayonnaise",
+          size: '8 OZ',
+          casePrice: '24.00',
+          sourcePhotoIds: [photoA.id],
+        }),
+        extractedItem({
+          rawName: 'HELLM MAYO',
+          canonicalName: "Hellmann's Mayonnaise",
+          size: '40 OZ',
+          casePrice: '60.00',
+          sourcePhotoIds: [photoA.id],
+        }),
+        // The same product printed twice on the one photograph: two cases bought, not one
+        // line seen twice.
+        extractedItem({
+          rawName: 'EXMP CORN OIL',
+          canonicalName: 'Example Corn Oil',
+          size: '1 GAL',
+          casePrice: '30.00',
+          sourcePhotoIds: [photoA.id],
+        }),
+        extractedItem({
+          rawName: 'EXMP CORN OIL',
+          canonicalName: 'Example Corn Oil',
+          size: '1 GAL',
+          casePrice: '30.00',
+          sourcePhotoIds: [photoA.id],
+        }),
+      ],
+      warnings: [],
+    });
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [
+        // The overlap: the same printed line caught again in the next photograph.
+        extractedItem({
+          rawName: 'HELLM MAYO',
+          canonicalName: "Hellmann's Mayonnaise",
+          size: '8 OZ',
+          casePrice: '24.00',
+          sourcePhotoIds: [photoB.id],
+        }),
+      ],
+      warnings: [],
+    });
+
+    const result = await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
+    expect(result.ok).toBe(true);
+
+    const rows = await repo.itemsFor(order.id);
+
+    // 1. The two mayonnaise sizes are separate products with separate prices.
+    const mayo = rows.filter((r) => r.displayName.toLowerCase().includes('mayonnaise'));
+    expect(mayo).toHaveLength(2);
+    const productIds = new Set(mayo.map((r) => r.productId));
+    expect(productIds.size).toBe(2);
+    expect(new Set(mayo.map((r) => r.size))).toEqual(new Set(['8 OZ', '40 OZ']));
+
+    // 2. Both cases of corn oil survive - that is money the shop actually paid.
+    const oil = rows.filter((r) => r.displayName.toLowerCase().includes('corn oil'));
+    expect(oil).toHaveLength(2);
+
+    // 3. The overlapping photograph did not add a third jar of 8oz mayonnaise.
+    expect(mayo.filter((r) => r.size === '8 OZ')).toHaveLength(1);
+  });
+});
