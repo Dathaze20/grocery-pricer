@@ -3,7 +3,7 @@ import { Money } from '../../core/money';
 import { ItemConfidence } from '../../core/models';
 import { NameNormalizer } from '../../core/matching';
 import { CostCalculator } from '../../core/cost';
-import { makeDiscount, type DiscountScope } from '../../core/models';
+import { DiscountScope, makeDiscount } from '../../core/models';
 import { caseEconomics, priceForTargetProfit, stepProfitTarget } from '../../core/profit';
 import { APPROVED_PRICE_BELOW_COST } from '../../app/processing';
 import type { Repository } from '../../data/repository';
@@ -110,6 +110,12 @@ function ItemRow(props: {
   const { repo, item } = props;
 
   const unitsPerCase = item.unitsPerCase ?? null;
+  const [unitsText, setUnitsText] = useState('');
+
+  // Two things the receipt did not say, each of which leaves the cost wrong in its own way.
+  const needsScope =
+    item.discount !== null && item.discount.scope === DiscountScope.UNKNOWN;
+  const needsUnits = unitsPerCase === null && item.casePrice !== null;
   // Subtracting the printed discount from the case price is only right for a whole-case
   // discount. A per-unit discount multiplies by the pack count, a subset discount applies to
   // some of it, a custom one is spread over the cases bought, and an unknown one must not move
@@ -185,6 +191,15 @@ function ItemRow(props: {
     setPrice(priceForTargetProfit(netCaseCost, unitsPerCase, wanted).retailPrice);
     setTargetText('');
   }, [netCaseCost, unitsPerCase, targetText, setPrice]);
+
+  /** The owner's answer, applied to this one row. Their approved price is never touched. */
+  const revise = useCallback(
+    async (change: { scope?: DiscountScope; unitsPerCase?: number }) => {
+      await repo.reviseItem(item.id, change);
+      await props.onSaved(`Updated ${item.displayName}`);
+    },
+    [repo, item.id, item.displayName, props],
+  );
 
   const save = useCallback(async () => {
     // Saves what the box is showing, or nothing at all. There is no second copy to fall back on.
@@ -336,6 +351,70 @@ function ItemRow(props: {
 
       {props.open && (
         <div className="stack">
+          {needsScope && (
+            // The question the receipt left open. It was being answered silently with "do not
+            // apply it", which is the one answer that is certainly wrong when a flyer line is
+            // printed right under the product.
+            <div className="notice warn">
+              <p style={{ marginTop: 0 }}>
+                A {Money.fromStorage(item.discount!.amount).format()} discount was printed for
+                this product, but the receipt does not say what it comes off. Until you say, it
+                is not in the cost.
+              </p>
+              <div className="stack">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-block"
+                  onClick={() => void revise({ scope: DiscountScope.WHOLE_CASE })}
+                >
+                  Off the whole case
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-block"
+                  onClick={() => void revise({ scope: DiscountScope.PER_UNIT })}
+                >
+                  Off each {unitsPerCase === null ? 'unit' : `of the ${unitsPerCase}`}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-block"
+                  onClick={() => void revise({ scope: DiscountScope.IGNORED })}
+                >
+                  It is not for this product
+                </button>
+              </div>
+            </div>
+          )}
+
+          {needsUnits && (
+            <div className="notice warn">
+              <p style={{ marginTop: 0 }}>
+                The receipt does not say how many are in this pack, so there is no cost each.
+                Count them and put the number in - nothing here will guess it.
+              </p>
+              <div className="row">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="grow"
+                  placeholder="pieces per pack"
+                  aria-label={`Pieces per pack for ${item.displayName}`}
+                  value={unitsText}
+                  onChange={(event) => setUnitsText(event.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={!Number.isInteger(Number(unitsText)) || Number(unitsText) <= 0}
+                  onClick={() => void revise({ unitsPerCase: Number(unitsText) })}
+                >
+                  Use it
+                </button>
+              </div>
+            </div>
+          )}
+
           {economics !== null && (
             <>
               <label htmlFor={`target-${item.id}`}>Aim for a profit per case of</label>

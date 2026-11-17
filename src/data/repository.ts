@@ -1,7 +1,9 @@
 import type { IDBPDatabase } from 'idb';
 import { Money } from '../core/money';
 import { NameNormalizer, normalizeUpc, upcEquivalent } from '../core/matching';
-import { Category, guessCategory } from '../core/models';
+import { Category, DiscountScope, guessCategory, makeDiscount } from '../core/models';
+import { CostCalculator } from '../core/cost';
+import { PricingEngine, defaultPricingRules, type PricingRules } from '../core/pricing';
 import { openGroceryDb, type GroceryDb } from './db';
 import {
   DB_NAME,
@@ -291,6 +293,88 @@ export class Repository {
    * history in the same breath - so the next order can say "you sold this at $4.99 last time"
    * without anyone having to remember.
    */
+  /**
+   * Applies a correction the shopkeeper makes to one row, and re-does the arithmetic.
+   *
+   * Two things a receipt often does not say: what a flyer discount applies to, and how many
+   * pieces are in a pack. Both are knowable - by the person holding the case - and neither is
+   * anything this app should guess. This is where their answer goes.
+   *
+   * What it recomputes is cost and the suggested price. What it never touches is the price the
+   * owner approved: that is their decision about what to charge, and a correction to the cost
+   * is not permission to overwrite it.
+   */
+  async reviseItem(
+    itemId: number,
+    change: { scope?: DiscountScope; unitsPerCase?: number },
+    rules: PricingRules = defaultPricingRules(),
+  ): Promise<StoredItem | null> {
+    const item = await this.item(itemId);
+    if (item === null) return null;
+
+    const unitsPerCase = change.unitsPerCase ?? item.unitsPerCase;
+    const casePrice = item.casePrice === null ? null : Money.fromStorage(item.casePrice);
+
+    const discount =
+      item.discount === null
+        ? null
+        : makeDiscount(
+            item.discount.description,
+            Money.fromStorage(item.discount.amount),
+            change.scope ?? item.discount.scope,
+            item.discount.appliesToUnits ?? null,
+          );
+
+    let trueUnitCost: number | null = null;
+    let totalWholesaleCost: number | null = null;
+    if (casePrice !== null && unitsPerCase !== null && unitsPerCase > 0) {
+      const breakdown = CostCalculator.calculate({
+        casePrice,
+        unitsPerCase,
+        casesPurchased: item.casesPurchased,
+        discount,
+      });
+      trueUnitCost = breakdown.trueUnitCost.toStorage();
+      totalWholesaleCost = breakdown.totalWholesaleCost.toStorage();
+    }
+
+    const product = item.productId === null ? null : await this.product(item.productId);
+    const suggestion = new PricingEngine(rules).suggest({
+      unitCost: trueUnitCost === null ? null : Money.fromStorage(trueUnitCost),
+      category: item.category,
+      previousRetailPrice:
+        product?.lastRetailPrice != null ? Money.fromStorage(product.lastRetailPrice) : null,
+      productOverridePrice:
+        product?.overridePrice != null ? Money.fromStorage(product.overridePrice) : null,
+    });
+
+    // The questions this row was flagged for have been answered, so the flags go.
+    const settled = item.issues.filter(
+      (issue) =>
+        !(change.scope !== undefined && issue === 'UNKNOWN_DISCOUNT_SCOPE') &&
+        !(change.unitsPerCase !== undefined && issue === 'MISSING_UNITS_PER_CASE'),
+    );
+
+    return this.updateItem(itemId, {
+      unitsPerCase,
+      discount:
+        discount === null
+          ? null
+          : {
+              description: discount.description,
+              amount: discount.amount.toStorage(),
+              scope: discount.scope,
+              appliesToUnits: discount.appliesToUnits ?? null,
+            },
+      trueUnitCost,
+      totalWholesaleCost,
+      suggestedPrice: suggestion.suggestedPrice.toStorage(),
+      pricingSource: suggestion.source,
+      pricingRationale: suggestion.rationale,
+      issues: settled,
+    });
+  }
+
   async approvePrice(itemId: number, price: Money): Promise<StoredItem | null> {
     const item = await this.item(itemId);
     if (item === null) return null;

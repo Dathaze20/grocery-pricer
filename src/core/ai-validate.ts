@@ -236,6 +236,19 @@ function validateDiscount(
     issues.push(ExtractionIssue.UNKNOWN_DISCOUNT_SCOPE);
   }
 
+  /*
+   * A discount that is read but cannot be applied has to be visible.
+   *
+   * This guard used to fire only when the scope string was unparseable - never when the model
+   * answered UNKNOWN, which is the answer the prompt explicitly asks for whenever a receipt
+   * does not spell out what a discount applies to. A wholesale flyer line almost never spells
+   * it out, so the ordinary case produced a row carrying a discount, silently not applying it,
+   * and flagging nothing. The cost on screen was then the undiscounted one, and looked settled.
+   */
+  if (amount !== null && scope === DiscountScope.UNKNOWN) {
+    issues.push(ExtractionIssue.UNKNOWN_DISCOUNT_SCOPE);
+  }
+
   // A discount bigger than the case is not a free case plus change; it is a misread.
   if (amount !== null && casePrice !== null && amount.greaterThan(casePrice)) {
     issues.push(ExtractionIssue.DISCOUNT_EXCEEDS_CASE_PRICE);
