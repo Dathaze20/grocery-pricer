@@ -360,7 +360,7 @@ export class Repository {
       await this.rememberUnitsPerCase(item.productId, change.unitsPerCase);
     }
 
-    return this.updateItem(itemId, {
+    const revised = await this.updateItem(itemId, {
       unitsPerCase,
       discount:
         discount === null
@@ -378,6 +378,54 @@ export class Repository {
       pricingRationale: suggestion.rationale,
       issues: settled,
     });
+
+    // The row is not the only place that figure appears. An order summary still showing the
+    // uncorrected total, or a product still remembering the uncorrected cost, is the same
+    // wrong number surviving in a quieter place.
+    await this.recomputeOrderTotal(item.orderId);
+    if (item.productId !== null && trueUnitCost !== null) {
+      await this.refreshLastCost(item.productId, item.orderId, trueUnitCost);
+    }
+
+    return revised;
+  }
+
+  /**
+   * Re-adds the order's wholesale total from its rows.
+   *
+   * Summed rather than adjusted by a difference: an adjustment has to be right about what the
+   * old figure was, and a total that drifts is worse than one that is simply recomputed. Only
+   * the total moves - the status, the warnings and every approved price are left alone.
+   */
+  private async recomputeOrderTotal(orderId: number): Promise<void> {
+    const items = await this.itemsFor(orderId);
+    const total = items.reduce(
+      (sum, row) => (row.totalWholesaleCost === null ? sum : sum.plus(Money.fromStorage(row.totalWholesaleCost))),
+      Money.ZERO,
+    );
+    await this.updateOrder(orderId, { totalWholesaleCost: total.toStorage() });
+  }
+
+  /**
+   * Updates what this product last cost, but only when the correction is to its latest order.
+   *
+   * Correcting a receipt from three months ago must not overwrite what the product costs now.
+   * lastCost means the most recent purchase, so an older order's correction leaves it alone -
+   * and the price history, which is the record of what was actually paid and when, is never
+   * rewritten by a correction either.
+   */
+  private async refreshLastCost(
+    productId: number,
+    orderId: number,
+    trueUnitCost: number,
+  ): Promise<void> {
+    const rows = await this.db.getAllFromIndex('items', 'productId', productId);
+    const latestOrder = rows.reduce((newest, row) => Math.max(newest, row.orderId), 0);
+    if (orderId < latestOrder) return;
+
+    const product = await this.db.get('products', productId);
+    if (product === undefined) return;
+    await this.db.put('products', { ...product, lastCost: trueUnitCost });
   }
 
   async approvePrice(itemId: number, price: Money): Promise<StoredItem | null> {
