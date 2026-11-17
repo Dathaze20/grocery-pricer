@@ -153,3 +153,38 @@ export function guessCategory(description: string | null | undefined): Category 
   }
   return Category.OTHER;
 }
+
+/**
+ * Words that say a discount comes off each piece rather than off the case.
+ *
+ * Deliberately a list of things a receipt actually prints. If any of these appear, the amount
+ * is not safe to treat as a case-level deduction and the shop is asked instead.
+ */
+const PER_UNIT_MARKERS = /\b(each|ea\b|per\s*unit|per\s*piece|\/\s*unit|\/\s*ea|per\s*lb|per\s*pound)\b/i;
+
+/**
+ * Jetro's own word for a case-level promotion, printed on its own line under the product.
+ *
+ * `Flyer 43 - PEDIGREE ADULT CR PUPPY DRY` is a line off that case. It is the marker the shop
+ * already recognises, which is why they call these flyer discounts.
+ */
+const WHOLE_CASE_MARKERS = /\b(flyer|case\s*discount|case\s*deal|off\s*case|promo\s*case)\b/i;
+
+/**
+ * Reads a discount's scope off the receipt text, or admits it cannot.
+ *
+ * This is the difference between working automatically and guessing. A line that says "Flyer"
+ * and nothing about units is a case-level deduction, and making the shopkeeper confirm that
+ * forty-five times is not caution, it is a chore. A line that mentions each, per unit or a
+ * weight is genuinely ambiguous, and so is a line with no text at all - those still get asked,
+ * because applying the wrong one changes what the shop charges.
+ *
+ * Returns null when the receipt does not settle it.
+ */
+export function scopeFromReceiptText(lines: readonly string[]): DiscountScope | null {
+  const text = lines.join(' \n ');
+  if (text.trim().length === 0) return null;
+  // Ambiguity wins. A line carrying both markers is not evidence of either.
+  if (PER_UNIT_MARKERS.test(text)) return null;
+  return WHOLE_CASE_MARKERS.test(text) ? DiscountScope.WHOLE_CASE : null;
+}

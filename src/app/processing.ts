@@ -324,9 +324,31 @@ async function priceOne(
       : guessCategory(displayName);
 
   const casePrice = Money.parseOrNull(item.casePrice);
-  const unitsPerCase = item.unitsPerCase ?? null;
   const casesPurchased = item.casesPurchased ?? 1;
   const discount = toDiscount(item.discount);
+
+  const product = await repo.findOrCreateProduct({
+    displayName: displayName.length > 0 ? displayName : (item.rawName ?? 'Unnamed item'),
+    size: item.size ?? null,
+    upc: item.upc ?? null,
+    supplierSku: item.supplierSku ?? null,
+    // The abbreviation as printed, so the next receipt recognises it without asking the model.
+    receiptName: item.rawName ?? null,
+    category,
+    unitsPerCase: item.unitsPerCase ?? null,
+  });
+
+  /*
+   * The receipt first, then what the shop already established.
+   *
+   * A printed pack count is evidence from this delivery and wins. When the line does not print
+   * one - which is why the Febreze had no cost at all - the count somebody verified earlier is
+   * used instead of leaving the row blank and asking again.
+   */
+  const unitsPerCase = item.unitsPerCase ?? product.unitsPerCase ?? null;
+  if (item.unitsPerCase != null && product.unitsPerCase == null) {
+    await repo.rememberUnitsPerCase(product.id, item.unitsPerCase);
+  }
 
   let trueUnitCost: Money | null = null;
   let totalWholesaleCost: Money | null = null;
@@ -340,16 +362,6 @@ async function priceOne(
     trueUnitCost = breakdown.trueUnitCost;
     totalWholesaleCost = breakdown.totalWholesaleCost;
   }
-
-  const product = await repo.findOrCreateProduct({
-    displayName: displayName.length > 0 ? displayName : (item.rawName ?? 'Unnamed item'),
-    size: item.size ?? null,
-    upc: item.upc ?? null,
-    supplierSku: item.supplierSku ?? null,
-    // The abbreviation as printed, so the next receipt recognises it without asking the model.
-    receiptName: item.rawName ?? null,
-    category,
-  });
 
   const suggestion = engine.suggest({
     unitCost: trueUnitCost,

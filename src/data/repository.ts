@@ -355,6 +355,11 @@ export class Repository {
         !(change.unitsPerCase !== undefined && issue === 'MISSING_UNITS_PER_CASE'),
     );
 
+    // A count the owner established is worth keeping: it is the same pack next month.
+    if (change.unitsPerCase !== undefined && item.productId !== null) {
+      await this.rememberUnitsPerCase(item.productId, change.unitsPerCase);
+    }
+
     return this.updateItem(itemId, {
       unitsPerCase,
       discount:
@@ -417,6 +422,7 @@ export class Repository {
     supplierSku?: string | null;
     receiptName?: string | null;
     category?: Category;
+    unitsPerCase?: number | null;
   }): Promise<StoredProduct> {
     const normalized = NameNormalizer.normalize(input.displayName);
     const alias = NameNormalizer.normalize(input.receiptName ?? '');
@@ -473,6 +479,7 @@ export class Repository {
       // A brand-new product has confirmed nothing yet.
       aliases: [],
       category: input.category ?? guessCategory(input.displayName),
+      unitsPerCase: input.unitsPerCase ?? null,
       lastCost: null,
       lastRetailPrice: null,
       overridePrice: null,
@@ -512,6 +519,14 @@ export class Repository {
     const product = await this.db.get('products', productId);
     if (product === undefined || product.aliases.includes(alias)) return;
     await this.db.put('products', { ...product, aliases: [...product.aliases, alias] });
+  }
+
+  /** Writes down a pack count once, so the same case is never counted twice. */
+  async rememberUnitsPerCase(productId: number, unitsPerCase: number): Promise<void> {
+    if (!Number.isInteger(unitsPerCase) || unitsPerCase <= 0) return;
+    const product = await this.db.get('products', productId);
+    if (product === undefined) return;
+    await this.db.put('products', { ...product, unitsPerCase });
   }
 
   private async touchProduct(product: StoredProduct, alias = ''): Promise<StoredProduct> {

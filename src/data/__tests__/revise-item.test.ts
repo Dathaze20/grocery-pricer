@@ -167,3 +167,77 @@ describe('answering what the receipt did not say', () => {
     expect(await repo.reviseItem(9999, { scope: DiscountScope.WHOLE_CASE })).toBeNull();
   });
 });
+
+describe('a count the owner establishes is not asked for twice', () => {
+  it('remembers it against the product', async () => {
+    const repo = await freshRepo();
+    const product = await repo.findOrCreateProduct({
+      displayName: 'Febreze Air Spring Clean',
+      size: '8.1 OZ',
+      upc: null,
+    });
+    expect(product.unitsPerCase ?? null).toBeNull();
+
+    const order = await repo.createOrder();
+    const [row] = await repo.addItems([
+      {
+        orderId: order.id,
+        productId: product.id,
+        rawName: 'FEBREZE AIR SPRING',
+        displayName: 'Febreze Air Spring Clean',
+        size: '8.1 OZ',
+        upc: null,
+        supplierSku: null,
+        category: Category.OTHER,
+        casePrice: Money.of('9.89').toStorage(),
+        unitsPerCase: null,
+        casesPurchased: 1,
+        looseUnits: 0,
+        discount: null,
+        trueUnitCost: null,
+        totalWholesaleCost: null,
+        suggestedPrice: null,
+        pricingSource: PricingSource.COST_TIER,
+        pricingRationale: '',
+        approvedPrice: null,
+        previousPrice: null,
+        confidence: ItemConfidence.NEEDS_REVIEW,
+        aiConfidence: 0.8,
+        issues: ['MISSING_UNITS_PER_CASE'],
+        sourcePhotoIds: [],
+        sourceText: [],
+      },
+    ]);
+
+    await repo.reviseItem(row!.id, { unitsPerCase: 4 });
+
+    // Counted once. The next receipt for this product will not ask.
+    expect((await repo.product(product.id))!.unitsPerCase).toBe(4);
+  });
+
+  it('refuses a count that is not a whole number of pieces', async () => {
+    const repo = await freshRepo();
+    const product = await repo.findOrCreateProduct({
+      displayName: 'Example Product',
+      size: null,
+      upc: null,
+    });
+
+    for (const bad of [0, -3, 2.5, Number.NaN]) {
+      await repo.rememberUnitsPerCase(product.id, bad);
+      expect((await repo.product(product.id))!.unitsPerCase ?? null, String(bad)).toBeNull();
+    }
+  });
+
+  it('a product saved before this existed reads as unknown, with no migration', async () => {
+    const repo = await freshRepo();
+    const product = await repo.findOrCreateProduct({
+      displayName: 'Older Product',
+      size: null,
+      upc: null,
+    });
+
+    // The shape of every product saved before the field existed.
+    expect((await repo.product(product.id))!.unitsPerCase ?? null).toBeNull();
+  });
+});

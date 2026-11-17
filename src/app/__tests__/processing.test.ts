@@ -8,7 +8,7 @@ import { Repository } from '../../data/repository';
 import { resetDbHandle } from '../../data/db';
 import { OrderStatus, MessageRole, type StoredPhoto, isIncomplete } from '../../data/schema';
 import { OrderImageType, type AiExtractedItem } from '../../core/ai-types';
-import { processOrder } from '../processing';
+import { APPROVED_PRICE_BELOW_COST, processOrder } from '../processing';
 
 let dbCounter = 0;
 
@@ -973,5 +973,187 @@ describe('three ways a receipt can be miscounted', () => {
 
     // 3. The overlapping photograph did not add a third jar of 8oz mayonnaise.
     expect(mayo.filter((r) => r.size === '8 OZ')).toHaveLength(1);
+  });
+});
+
+describe('working without asking, where the receipt says enough', () => {
+  it('applies a Jetro flyer discount on its own: Pampers at $9.75', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [
+        extractedItem({
+          rawName: 'PAMPERS JUMBO SZ6',
+          canonicalName: 'Pampers Jumbo Size 6',
+          casePrice: '45.99',
+          unitsPerCase: 4,
+          casesPurchased: 1,
+          discount: { amount: '7.00', scope: 'UNKNOWN', appliesToUnits: null },
+          sourceText: ['PAMPERS JUMBO SZ6  45.99', 'Flyer 12 - PAMPERS JUMBO   -7.00'],
+        }),
+      ],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId);
+    const row = (await repo.itemsFor(orderId))[0]!;
+
+    expect(Money.fromStorage(row.trueUnitCost!).format()).toBe('$9.75');
+    expect(row.discount!.scope).toBe('WHOLE_CASE');
+    // Nothing to ask, so nothing is asked.
+    expect(row.issues).not.toContain('UNKNOWN_DISCOUNT_SCOPE');
+  });
+
+  it('still asks when the line is genuinely ambiguous', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [
+        extractedItem({
+          rawName: 'CESAR FILET',
+          casePrice: '29.39',
+          unitsPerCase: 4,
+          discount: { amount: '1.40', scope: 'UNKNOWN', appliesToUnits: null },
+          sourceText: ['CESAR FILET 2.7LB  29.39  1.40 each'],
+        }),
+      ],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId);
+    const row = (await repo.itemsFor(orderId))[0]!;
+
+    // "each" could mean per unit, and guessing would change what the shop charges.
+    expect(row.discount!.scope).toBe('UNKNOWN');
+    expect(row.issues).toContain('UNKNOWN_DISCOUNT_SCOPE');
+    expect(Money.fromStorage(row.trueUnitCost!).format()).toBe('$7.35');
+  });
+
+  it('remembers a pack count, so the next receipt does not need one', async () => {
+    const repo = await freshRepo();
+
+    // First delivery: the receipt printed the count.
+    const first = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [
+        extractedItem({
+          rawName: 'FEBREZE AIR SPRING',
+          canonicalName: 'Febreze Air Spring Clean',
+          size: '8.1 OZ',
+          casePrice: '9.89',
+          unitsPerCase: 4,
+          discount: null,
+        }),
+      ],
+      warnings: [],
+    });
+    await processOrder(repo, provider, first.orderId);
+
+    // Second delivery: the same product, and this time the line does not print the count.
+    const second = await repo.createOrder();
+    await repo.addPhoto({
+      orderId: second.id,
+      bytes: photoBytes(),
+      mimeType: 'image/jpeg',
+      type: OrderImageType.RECEIPT,
+      isDeliveryPhoto: false,
+      createdAt: Date.now(),
+    });
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [
+        extractedItem({
+          rawName: 'FEBREZE AIR SPRING',
+          canonicalName: 'Febreze Air Spring Clean',
+          size: '8.1 OZ',
+          casePrice: '9.89',
+          unitsPerCase: null,
+          discount: { amount: '0.50', scope: 'UNKNOWN', appliesToUnits: null },
+          sourceText: ['FEBREZE AIR SPRING 8.1Z  9.89', 'Flyer 7 - FEBREZE AIR  -0.50'],
+        }),
+      ],
+      warnings: [],
+    });
+    await processOrder(repo, provider, second.id);
+
+    const row = (await repo.itemsFor(second.id))[0]!;
+    // Counted once, months ago. The cost is there without anybody being asked again.
+    expect(row.unitsPerCase).toBe(4);
+    expect(Money.fromStorage(row.trueUnitCost!).format()).toBe('$2.35');
+  });
+
+  it('prices from the new cost when a later receipt costs more', async () => {
+    const repo = await freshRepo();
+    const first = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [extractedItem({ casePrice: '24.00', unitsPerCase: 12 })],
+      warnings: [],
+    });
+    await processOrder(repo, provider, first.orderId);
+    const before = (await repo.itemsFor(first.orderId))[0]!;
+
+    const second = await repo.createOrder();
+    await repo.addPhoto({
+      orderId: second.id,
+      bytes: photoBytes(),
+      mimeType: 'image/jpeg',
+      type: OrderImageType.RECEIPT,
+      isDeliveryPhoto: false,
+      createdAt: Date.now(),
+    });
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [extractedItem({ casePrice: '48.00', unitsPerCase: 12 })],
+      warnings: [],
+    });
+    await processOrder(repo, provider, second.id);
+    const after = (await repo.itemsFor(second.id))[0]!;
+
+    expect(Money.fromStorage(after.trueUnitCost!).greaterThan(Money.fromStorage(before.trueUnitCost!))).toBe(true);
+    // A new cost produces a new suggestion rather than carrying the old one forward.
+    expect(after.suggestedPrice).not.toBe(before.suggestedPrice);
+  });
+
+  it('keeps an approved price but says when the cost has overtaken it', async () => {
+    const repo = await freshRepo();
+    const first = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [extractedItem({ casePrice: '24.00', unitsPerCase: 12 })],
+      warnings: [],
+    });
+    await processOrder(repo, provider, first.orderId);
+    const row = (await repo.itemsFor(first.orderId))[0]!;
+    await repo.approvePrice(row.id, Money.of('3.00'));
+
+    // The supplier doubles the price.
+    const second = await repo.createOrder();
+    await repo.addPhoto({
+      orderId: second.id,
+      bytes: photoBytes(),
+      mimeType: 'image/jpeg',
+      type: OrderImageType.RECEIPT,
+      isDeliveryPhoto: false,
+      createdAt: Date.now(),
+    });
+    provider.queueExtraction({
+      supplier: 'JETRO',
+      items: [extractedItem({ casePrice: '96.00', unitsPerCase: 12 })],
+      warnings: [],
+    });
+    await processOrder(repo, provider, second.id);
+
+    // The owner's $3.00 stands - it is their price - but it now loses money on every sale.
+    expect(Money.fromStorage((await repo.item(row.id))!.approvedPrice!).format()).toBe('$3.00');
+    expect((await repo.itemsFor(second.id))[0]!.issues).toContain(APPROVED_PRICE_BELOW_COST);
   });
 });

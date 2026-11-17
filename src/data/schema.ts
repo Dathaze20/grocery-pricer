@@ -139,6 +139,17 @@ export interface StoredProduct {
    */
   aliases: string[];
   category: Category;
+  /**
+   * Pieces in one case or pack, once somebody has established it.
+   *
+   * Receipts often do not print this, and without it there is no cost each - nothing to
+   * divide by. The shop knows it: they are holding the case. Remembered here so the same
+   * product never has to be counted twice.
+   *
+   * Optional, and absent on every product saved before this existed. An old record simply has
+   * no value and is treated as unknown, so nothing is rewritten and no migration runs.
+   */
+  unitsPerCase?: number | null;
   lastCost: number | null;
   lastRetailPrice: number | null;
   /** A price the shopkeeper pinned to this product; beats every rule. */
