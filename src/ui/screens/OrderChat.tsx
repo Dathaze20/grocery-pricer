@@ -381,6 +381,30 @@ export function OrderChat(props: {
         </div>
         {dictation.error !== null && <p className="notice warn">{dictation.error}</p>}
 
+        {order !== null && order.warnings.length > 0 && (
+          /*
+           * What the app could not read, kept from when the order was processed.
+           *
+           * These were being stored and never shown. Only the first ever reached the summary
+           * line, and once a partial reading started adding its own note at the front, even
+           * that one slot stopped carrying the reasons. A shop looking at a short total had no
+           * way to find out what had gone missing.
+           *
+           * Read straight from the saved order, so it works for receipts processed long ago
+           * without re-reading anything.
+           */
+          <details className="note">
+            <summary>
+              What could not be read ({order.warnings.length})
+            </summary>
+            <ul>
+              {order.warnings.map((warning, index) => (
+                <li key={`${index}-${warning}`}>{warning}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+
         {job !== null && job.kind !== 'running' && job.result.timings.length > 0 && (
           // Folded away, and durations only: no photograph, no prompt, no reply, no key,
           // nothing off the receipt. It is here so a slow read can be described precisely
