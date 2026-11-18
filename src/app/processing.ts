@@ -207,7 +207,11 @@ export async function processOrder(
         );
       }
       batchesFailed += 1;
-      batches.push({ supplier: null, items: [], warnings: [aiErrorMessage(result.error)] });
+      batches.push({
+        supplier: null,
+        items: [],
+        warnings: [groupFailureWarning(batch, photos, aiErrorMessage(result.error))],
+      });
       continue;
     }
     batches.push(result.value);
@@ -538,4 +542,34 @@ function describeIssue(issue: ExtractionIssue): string {
     default:
       return issue.toLowerCase().replace(/_/g, ' ');
   }
+}
+
+/**
+ * Says which photographs went unread, and why.
+ *
+ * Two things this has to get right. The numbers are the photograph's place in the order, the
+ * way the owner counted them when taking them, rather than a database id that means nothing to
+ * anybody. And naming them makes each group's warning distinct, which matters because
+ * mergeExtractions puts the warnings through a Set: two groups failing for the same reason used
+ * to collapse into one line, so a receipt that lost four photographs reported losing two.
+ *
+ * The reason is the app's own sentence for the failure. No part of the receipt, no reply from
+ * the model and nothing resembling a key goes in here.
+ */
+function groupFailureWarning(
+  batch: readonly IdentifiedImage[],
+  photos: readonly { id: number }[],
+  reason: string,
+): string {
+  const numbers = batch
+    .map((part) => photos.findIndex((photo) => photo.id === part.photoId) + 1)
+    .filter((position) => position > 0)
+    .sort((a, b) => a - b);
+
+  if (numbers.length === 0) return `A group of photos could not be read: ${reason}`;
+  const list =
+    numbers.length === 1
+      ? `Photo ${numbers[0]}`
+      : `Photos ${numbers.slice(0, -1).join(', ')} and ${numbers[numbers.length - 1]}`;
+  return `${list} could not be read: ${reason}`;
 }

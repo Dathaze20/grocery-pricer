@@ -1157,3 +1157,113 @@ describe('working without asking, where the receipt says enough', () => {
     expect((await repo.itemsFor(second.id))[0]!.issues).toContain(APPROVED_PRICE_BELOW_COST);
   });
 });
+
+describe('saying which photographs went unread', () => {
+  async function orderWith(repo: Repository, count: number): Promise<number> {
+    const order = await repo.createOrder();
+    for (let i = 0; i < count; i += 1) {
+      await repo.addPhoto({
+        orderId: order.id,
+        bytes: photoBytes(),
+        mimeType: 'image/jpeg',
+        type: OrderImageType.RECEIPT,
+        isDeliveryPhoto: false,
+        createdAt: 1000 + i,
+      });
+    }
+    return order.id;
+  }
+
+  it('names the photographs by the order they were taken in', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 4);
+    const provider = new FakeAiProvider();
+    // Photos 1 and 2 read; photos 3 and 4 do not come back.
+    provider.queueExtraction({ supplier: 'SUPPLIER', items: [extractedItem()], warnings: [] });
+    provider.queueFailure({ kind: 'timeout' });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(result.outcome).toBe('partial');
+    const saved = (await repo.order(orderId))!;
+    const failure = saved.warnings.find((w) => /^Photos? \d/.test(w));
+    expect(failure).toBeDefined();
+    expect(failure).toContain('Photos 3 and 4');
+    // The app's own sentence for the failure, so the cause is identifiable later.
+    expect(failure).toContain('too long');
+  });
+
+  it('keeps one warning per failed group even when the reason is identical', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 4);
+    const provider = new FakeAiProvider();
+    // Both groups fail the same way. These used to collapse into a single warning, because
+    // mergeExtractions puts them through a Set - so a receipt that lost four photographs
+    // reported losing two. A timeout is used because it is not retried, so one queued
+    // failure is one failed group.
+    provider.queueExtraction({ supplier: 'SUPPLIER', items: [extractedItem()], warnings: [] });
+    provider.queueFailure({ kind: 'timeout' });
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const bigger = await orderWith(repo, 6);
+    const second = new FakeAiProvider();
+    second.queueExtraction({ supplier: 'SUPPLIER', items: [extractedItem()], warnings: [] });
+    second.queueFailure({ kind: 'timeout' });
+    second.queueFailure({ kind: 'timeout' });
+    await processOrder(repo, second, bigger, { retryDelayMs: 0 });
+
+    const saved = (await repo.order(bigger))!;
+    const failures = saved.warnings.filter((w) => /^Photos? \d/.test(w));
+    expect(failures).toHaveLength(2);
+    expect(failures.some((w) => w.includes('Photos 3 and 4'))).toBe(true);
+    expect(failures.some((w) => w.includes('Photos 5 and 6'))).toBe(true);
+  });
+
+  it('says "Photo 7" rather than "Photos" for a group of one', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 7);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'SUPPLIER', items: [extractedItem()], warnings: [] });
+    provider.queueExtraction({ supplier: 'SUPPLIER', items: [extractedItem()], warnings: [] });
+    provider.queueExtraction({ supplier: 'SUPPLIER', items: [extractedItem()], warnings: [] });
+    provider.queueFailure({ kind: 'timeout' });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const saved = (await repo.order(orderId))!;
+    const failure = saved.warnings.find((w) => /^Photos? \d/.test(w))!;
+    expect(failure).toContain('Photo 7');
+    expect(failure).not.toContain('Photos 7');
+  });
+
+  it('puts nothing from the receipt or the reply into the warning', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 2);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({
+      kind: 'serverError',
+      status: 500,
+      detail: 'INTERNAL: something about the request',
+    });
+    provider.queueExtraction({ supplier: 'SUPPLIER', items: [extractedItem()], warnings: [] });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    // A first-group failure stops the run, so the reason arrives as the summary instead.
+    const text = `${result.summary} ${(await repo.order(orderId))!.warnings.join(' ')}`;
+    expect(text).not.toMatch(/AIza/);
+    expect(text).not.toMatch(/<html|candidates|inlineData/);
+  });
+
+  it('a fully read receipt records no failure warning at all', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 2);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({ supplier: 'SUPPLIER', items: [extractedItem()], warnings: [] });
+
+    await processOrder(repo, provider, orderId);
+
+    const saved = (await repo.order(orderId))!;
+    expect(saved.warnings.filter((w) => /^Photos? \d/.test(w))).toHaveLength(0);
+  });
+});
