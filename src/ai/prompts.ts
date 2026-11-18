@@ -54,6 +54,18 @@ Return this JSON shape:
   "warnings": [string]
 }
 
+DISCOUNTS ARE USUALLY PRINTED ON THEIR OWN LINE, NOT ON THE PRODUCT LINE.
+A wholesale receipt prints the product and its case price on one line, and any money off on a
+separate line underneath - for example:
+
+  PAMPERS JUMBO #6 21CT      45.99
+  Flyer 12 - PAMPERS JUMBO   -7.00
+
+Those two lines are ONE product. Put the 7.00 in that product's "discount.amount", and put BOTH
+lines in its "sourceText". A discount line belongs to the product line it names, or to the
+product line directly above it when it names none. Never emit a discount line as a product of
+its own, and never drop it.
+
 "scope" must be one of WHOLE_CASE, PER_UNIT, UNITS_SUBSET, CUSTOM, UNKNOWN.
 Use UNKNOWN whenever the receipt does not make it clear what a discount applies to.
 UNKNOWN is the safe answer; the shopkeeper will be asked. A wrong guess changes what they charge.

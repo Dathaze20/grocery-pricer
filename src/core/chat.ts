@@ -15,6 +15,8 @@ export type ChatIntent =
   | { kind: 'caseQuantity'; request: QueryRequest }
   | { kind: 'profitAt'; request: QueryRequest | null; retailPrice: Money }
   | { kind: 'lastCharged'; request: QueryRequest }
+  /** "did you record the flyer discount on the Cesar?" - about the receipt, not the price. */
+  | { kind: 'discountQuery'; request: QueryRequest }
   | { kind: 'costUnder'; limit: Money }
   | { kind: 'costOver'; limit: Money }
   | { kind: 'correction'; targets: CorrectionTarget[] }
@@ -89,6 +91,7 @@ export function parseChatIntent(raw: string): ChatIntent {
     parseCostFilter(lower) ??
     parseProfit(lower) ??
     parseCaseQuantity(lower) ??
+    parseDiscountQuery(lower) ??
     parseLastCharged(lower) ??
     parseOrderSummary(lower) ??
     parsePriceLookup(lower) ?? { kind: 'unknown' }
@@ -460,4 +463,35 @@ function pluralNoun(noun: string | null, count: number): string {
   if (count === 1) return base;
   if (base.endsWith('s') || base.endsWith('x') || base.endsWith('ch')) return `${base}es`;
   return `${base}s`;
+}
+
+/** Words a shopkeeper uses for money taken off a case on the receipt. */
+const DISCOUNT_WORDS = /\b(discount|discounts|flyer|deal|rebate|allowance|taken off|off the case)\b/i;
+/** The same, global, because stripping only the first leaves the rest in the product name. */
+const DISCOUNT_WORDS_ALL = new RegExp(DISCOUNT_WORDS.source, 'gi');
+const QUESTION_NOISE =
+  /\b(did|do|does|you|your|i|my|me|we|record|recorded|read|have|has|was|were|is|are|there|any|a|an|the|for|on|of|about|check|saved|receipt|receipts|information|if|missing|tell|what|which|whats|actual|cost|price)\b/gi;
+
+/**
+ * A question about what the receipt said, not about what to charge.
+ *
+ * These were falling through to the price lookup, which answers every question with a cost and
+ * a suggested price. Asked whether a $1.40 discount had been recorded, the app replied with a
+ * price - which reads as a yes. A question about the receipt deserves an answer about the
+ * receipt, including "it is not there", which is the answer that matters most.
+ */
+function parseDiscountQuery(lower: string): ChatIntent | null {
+  if (!DISCOUNT_WORDS.test(lower)) return null;
+
+  // The product is named somewhere in the sentence rather than right after an opener, so the
+  // longest run of words that is not about discounts is taken as the name.
+  const candidate = lower
+    .replace(DISCOUNT_WORDS_ALL, ' ')
+    .replace(/\$?\d[\d.,]*/g, ' ')
+    .replace(QUESTION_NOISE, ' ')
+    .replace(/[?.,!]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const phrase = productPhrase(stripFillers(candidate));
+  return phrase === null ? null : { kind: 'discountQuery', request: { phrase } };
 }

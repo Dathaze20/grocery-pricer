@@ -7,6 +7,7 @@ import { visualSearchText } from '../core/ai-types';
 import type { AiProvider } from '../ai/provider';
 import type { Repository } from '../data/repository';
 import { MessageRole, type StoredItem, isIncomplete } from '../data/schema';
+import { affectsCost } from '../core/models';
 import { toImagePart, type RawImage } from './images';
 
 export interface AskOptions {
@@ -149,6 +150,45 @@ function answerLocally(
     case 'lastCharged': {
       const outcome = engine.resolve(intent.request);
       return fromOutcome(outcome, (items) => ChatAnswerFormatter.numbered(items.map(toAnswer)));
+    }
+
+    case 'discountQuery': {
+      const outcome = engine.resolve(intent.request);
+      return fromOutcome(outcome, (items) =>
+        items
+          .map((queryable) => {
+            const row = stored.find((candidate) => candidate.id === queryable.id);
+            const discount = row?.discount ?? null;
+
+            if (discount === null) {
+              /*
+               * The answer that was missing, and the one that matters.
+               *
+               * Asked whether a discount had been recorded, the app used to reply with a cost
+               * and a suggested price - which reads as a yes. It is not. Nothing was read off
+               * the receipt for this product, so the cost shown is the undiscounted one, and a
+               * figure the shopkeeper types into this chat is their recollection rather than
+               * anything the app has seen on the paper.
+               */
+              return [
+                `${queryable.name}: no discount was recorded from the receipt.`,
+                queryable.unitCost === null
+                  ? 'There is no cost each for it either.'
+                  : `The ${queryable.unitCost.format()} each is the case price divided by the pack, with nothing taken off - so if a discount was printed, this cost is too high.`,
+                'I cannot confirm an amount I did not read.',
+              ].join('\n');
+            }
+
+            const amount = Money.fromStorage(discount.amount);
+            return [
+              `${queryable.name}: ${amount.format()} was read from the receipt.`,
+              affectsCost(discount.scope)
+                ? `It is in the ${queryable.unitCost?.format() ?? 'cost'} each.`
+                : 'It is not in the cost - the receipt does not say what it comes off, so it is waiting for you to say.',
+            ].join('\n');
+          })
+          .join('\n\n'),
+      );
     }
 
     case 'caseQuantity': {
