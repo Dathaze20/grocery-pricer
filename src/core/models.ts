@@ -188,3 +188,27 @@ export function scopeFromReceiptText(lines: readonly string[]): DiscountScope | 
   if (PER_UNIT_MARKERS.test(text)) return null;
   return WHOLE_CASE_MARKERS.test(text) ? DiscountScope.WHOLE_CASE : null;
 }
+
+/**
+ * A price the shopkeeper approved that no longer covers what the product costs.
+ *
+ * Their price is theirs and is never revised on their behalf, but a price under the cost loses
+ * money on every sale and nothing about a shelf tag shows it. Lives here, in the core, because
+ * both the receipt reading and a later correction have to reach the same verdict about the
+ * same row, and a rule written twice is a rule that will disagree with itself.
+ */
+export const APPROVED_PRICE_BELOW_COST = 'APPROVED_PRICE_BELOW_COST';
+
+/**
+ * Whether an approved price is now under the cost.
+ *
+ * Unknown either way is not a warning: no approved price means nothing to lose money on, and
+ * no cost means nothing to compare it with.
+ */
+export function approvedPriceIsBelowCost(
+  approvedPrice: Money | null,
+  trueUnitCost: Money | null,
+): boolean {
+  if (approvedPrice === null || trueUnitCost === null) return false;
+  return approvedPrice.lessThan(trueUnitCost);
+}

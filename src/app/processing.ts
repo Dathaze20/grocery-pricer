@@ -2,7 +2,7 @@ import { aiErrorMessage, isFatalForRun, isTransient, OrderImageType, type AiErro
 import { mergeExtractions, validateExtraction, ExtractionIssue, type ValidatedItem } from '../core/ai-validate';
 import { CostCalculator } from '../core/cost';
 import { Money } from '../core/money';
-import { ItemConfidence, categoryFromName, guessCategory, makeDiscount, type ReceiptDiscount } from '../core/models';
+import { ItemConfidence, categoryFromName, guessCategory, makeDiscount, type ReceiptDiscount, APPROVED_PRICE_BELOW_COST, approvedPriceIsBelowCost } from '../core/models';
 import { DiscountScope } from '../core/models';
 import { PricingEngine, defaultPricingRules, type PricingRules } from '../core/pricing';
 import type { AiProvider, IdentifiedImage } from '../ai/provider';
@@ -412,18 +412,19 @@ async function priceOne(
 /**
  * A price the owner approved once is not revised because the supplier put the cost up - it is
  * their price. But a price that is now under the new cost loses money on every sale, and
- * nobody notices that from a shelf tag, so it is flagged here.
+ * nobody notices that from a shelf tag, so it is flagged.
+ *
+ * Re-exported from core, where the rule itself lives, so that reading a receipt and correcting
+ * a row afterwards cannot reach different verdicts about the same product.
  */
-export const APPROVED_PRICE_BELOW_COST = 'APPROVED_PRICE_BELOW_COST';
+export { APPROVED_PRICE_BELOW_COST };
 
 function costWarnings(
   product: { lastRetailPrice: number | null },
   trueUnitCost: Money | null,
 ): string[] {
-  if (product.lastRetailPrice === null || trueUnitCost === null) return [];
-  return Money.fromStorage(product.lastRetailPrice).lessThan(trueUnitCost)
-    ? [APPROVED_PRICE_BELOW_COST]
-    : [];
+  const approved = product.lastRetailPrice === null ? null : Money.fromStorage(product.lastRetailPrice);
+  return approvedPriceIsBelowCost(approved, trueUnitCost) ? [APPROVED_PRICE_BELOW_COST] : [];
 }
 
 function confidenceOf(accepted: ValidatedItem): ItemConfidence {

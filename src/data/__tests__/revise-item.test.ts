@@ -434,3 +434,109 @@ describe('a correction reaches the order summary and the product', () => {
     expect(historyAfter).toHaveLength(historyBefore.length);
   });
 });
+
+describe('whether an approved price still covers the cost, asked again', () => {
+  it('flags a price that the corrected cost has overtaken', async () => {
+    const repo = await freshRepo();
+    // The receipt printed no pack count, so there was no cost each and nothing to compare.
+    const row = await rowAsRead(repo, {
+      name: 'Febreze Air Spring Clean 8.1 oz',
+      casePrice: '9.89',
+      unitsPerCase: null,
+      discount: null,
+    });
+    await repo.approvePrice(row.id, Money.of('2.00'));
+
+    // Two bottles, not four: $4.95 each, well above the $2.00 the shelf tag says.
+    const revised = await repo.reviseItem(row.id, { unitsPerCase: 2 });
+
+    expect(Money.fromStorage(revised!.trueUnitCost!).format()).toBe('$4.95');
+    expect(revised!.issues).toContain('APPROVED_PRICE_BELOW_COST');
+    // Their price stands. It is their decision; the warning is so they can make it again.
+    expect(Money.fromStorage(revised!.approvedPrice!).format()).toBe('$2.00');
+  });
+
+  it('clears the warning when the corrected cost no longer exceeds the price', async () => {
+    const repo = await freshRepo();
+    const row = await rowAsRead(repo, {
+      name: 'Pampers Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: '7.00',
+    });
+    await repo.approvePrice(row.id, Money.of('10.50'));
+
+    // Before the correction the cost was $11.50 - above the $10.50 approved price.
+    await repo.updateItem(row.id, { issues: ['APPROVED_PRICE_BELOW_COST'] });
+
+    // Applying the $7.00 to the case brings it to $9.75, so the warning is no longer true.
+    const revised = await repo.reviseItem(row.id, { scope: DiscountScope.WHOLE_CASE });
+
+    expect(Money.fromStorage(revised!.trueUnitCost!).format()).toBe('$9.75');
+    expect(revised!.issues).not.toContain('APPROVED_PRICE_BELOW_COST');
+    expect(Money.fromStorage(revised!.approvedPrice!).format()).toBe('$10.50');
+  });
+
+  it('says nothing when there is no approved price to be under', async () => {
+    const repo = await freshRepo();
+    const row = await rowAsRead(repo, {
+      name: 'Pampers Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: '7.00',
+    });
+
+    const revised = await repo.reviseItem(row.id, { scope: DiscountScope.WHOLE_CASE });
+    expect(revised!.issues).not.toContain('APPROVED_PRICE_BELOW_COST');
+  });
+
+  it('says nothing when the correction leaves no cost to compare', async () => {
+    const repo = await freshRepo();
+    const row = await rowAsRead(repo, {
+      name: 'Febreze Air Spring Clean 8.1 oz',
+      casePrice: '9.89',
+      unitsPerCase: null,
+      discount: '0.50',
+    });
+    await repo.approvePrice(row.id, Money.of('2.00'));
+
+    // Only the discount is answered; the pack count is still unknown, so there is still no
+    // cost each and nothing can be said about whether $2.00 covers it.
+    const revised = await repo.reviseItem(row.id, { scope: DiscountScope.WHOLE_CASE });
+
+    expect(revised!.trueUnitCost).toBeNull();
+    expect(revised!.issues).not.toContain('APPROVED_PRICE_BELOW_COST');
+  });
+
+  it('does not raise it when the price exactly meets the cost', async () => {
+    const repo = await freshRepo();
+    const row = await rowAsRead(repo, {
+      name: 'Pampers Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: '7.00',
+    });
+    await repo.approvePrice(row.id, Money.of('9.75'));
+
+    const revised = await repo.reviseItem(row.id, { scope: DiscountScope.WHOLE_CASE });
+
+    // Selling at cost makes nothing, but it loses nothing either.
+    expect(revised!.issues).not.toContain('APPROVED_PRICE_BELOW_COST');
+  });
+
+  it('leaves the other flags on the row alone', async () => {
+    const repo = await freshRepo();
+    const row = await rowAsRead(repo, {
+      name: 'Pampers Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: '7.00',
+    });
+    await repo.updateItem(row.id, { issues: ['UNKNOWN_DISCOUNT_SCOPE', 'NO_SOURCE_EVIDENCE'] });
+
+    const revised = await repo.reviseItem(row.id, { scope: DiscountScope.WHOLE_CASE });
+
+    expect(revised!.issues).toContain('NO_SOURCE_EVIDENCE');
+    expect(revised!.issues).not.toContain('UNKNOWN_DISCOUNT_SCOPE');
+  });
+});

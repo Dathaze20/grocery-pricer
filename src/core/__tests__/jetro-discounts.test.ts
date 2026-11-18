@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CostCalculator } from '../cost';
 import { Money } from '../money';
-import { DiscountScope, makeDiscount } from '../models';
+import { DiscountScope, approvedPriceIsBelowCost, makeDiscount } from '../models';
 
 /**
  * Three products checked against real Jetro receipts, with the figures the shop verified.
@@ -61,5 +61,19 @@ describe('the same products when the scope never arrives', () => {
 
   it('an ignored discount behaves the same way, by design', () => {
     expect(unitCost(CESAR, DiscountScope.IGNORED).format()).toBe('$7.35');
+  });
+});
+
+describe('one rule for whether a price covers the cost', () => {
+  it('is under only when it is genuinely under', () => {
+    expect(approvedPriceIsBelowCost(Money.of('9.00'), Money.of('9.75'))).toBe(true);
+    expect(approvedPriceIsBelowCost(Money.of('9.75'), Money.of('9.75'))).toBe(false);
+    expect(approvedPriceIsBelowCost(Money.of('10.00'), Money.of('9.75'))).toBe(false);
+  });
+
+  it('says nothing when either side is unknown', () => {
+    expect(approvedPriceIsBelowCost(null, Money.of('9.75'))).toBe(false);
+    expect(approvedPriceIsBelowCost(Money.of('9.00'), null)).toBe(false);
+    expect(approvedPriceIsBelowCost(null, null)).toBe(false);
   });
 });

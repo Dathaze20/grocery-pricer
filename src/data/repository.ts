@@ -1,7 +1,7 @@
 import type { IDBPDatabase } from 'idb';
 import { Money } from '../core/money';
 import { NameNormalizer, normalizeUpc, upcEquivalent } from '../core/matching';
-import { Category, DiscountScope, guessCategory, makeDiscount } from '../core/models';
+import { Category, DiscountScope, guessCategory, makeDiscount, APPROVED_PRICE_BELOW_COST, approvedPriceIsBelowCost } from '../core/models';
 import { CostCalculator } from '../core/cost';
 import { PricingEngine, defaultPricingRules, type PricingRules } from '../core/pricing';
 import { openGroceryDb, type GroceryDb } from './db';
@@ -352,8 +352,32 @@ export class Repository {
     const settled = item.issues.filter(
       (issue) =>
         !(change.scope !== undefined && issue === 'UNKNOWN_DISCOUNT_SCOPE') &&
-        !(change.unitsPerCase !== undefined && issue === 'MISSING_UNITS_PER_CASE'),
+        !(change.unitsPerCase !== undefined && issue === 'MISSING_UNITS_PER_CASE') &&
+        // Decided again below against the corrected cost, so the stale verdict goes first.
+        issue !== APPROVED_PRICE_BELOW_COST,
     );
+
+    /*
+     * Whether the owner's price still covers the cost, asked again.
+     *
+     * A correction moves the cost, and the cost is half of that comparison. Correcting a pack
+     * count upward raises the cost each and can leave an approved price underwater without
+     * anything saying so; correcting a discount downward can clear a warning that is no longer
+     * true. Both directions, or the flag means nothing.
+     *
+     * The row's own approved price first - it is the decision about this product - falling back
+     * to what the product was last sold for, which is what the receipt reading compares against.
+     */
+    const approvedPrice =
+      item.approvedPrice ?? product?.lastRetailPrice ?? null;
+    if (
+      approvedPriceIsBelowCost(
+        approvedPrice === null ? null : Money.fromStorage(approvedPrice),
+        trueUnitCost === null ? null : Money.fromStorage(trueUnitCost),
+      )
+    ) {
+      settled.push(APPROVED_PRICE_BELOW_COST);
+    }
 
     // A count the owner established is worth keeping: it is the same pack next month.
     if (change.unitsPerCase !== undefined && item.productId !== null) {
