@@ -280,8 +280,9 @@ export function OrderChat(props: {
             // usable but the total is not the order, and saying "done" here would be a lie
             // that somebody prices against.
             <div className="bubble reply status">
-              Only part of this receipt was read. The products below are safe to use, but the
-              total is not the whole order.
+              Only part of this receipt was read. The total below is not the whole order, and
+              any discount printed on a line that was not read is not in these costs - so check
+              a product against the receipt before you price from it.
               <button
                 type="button"
                 className="btn btn-secondary btn-block"

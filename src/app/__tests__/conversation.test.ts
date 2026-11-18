@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { FakeAiProvider } from '../../ai/fake';
 import { Money } from '../../core/money';
-import { Category, ItemConfidence } from '../../core/models';
+import { Category, ItemConfidence, DiscountScope } from '../../core/models';
 import { PricingSource } from '../../core/pricing';
 import { resetDbHandle } from '../../data/db';
 import { Repository } from '../../data/repository';
@@ -457,5 +457,113 @@ describe('a queued question that fails, then is retried by hand', () => {
     // The row is in the database, not a File the page was holding, so it is still readable.
     expect(pending.queue(orderId)[0]?.photoId).toBe(photo.id);
     expect(await repo.photo(photo.id)).not.toBeNull();
+  });
+});
+
+describe('answering what the receipt actually recorded', () => {
+  it('says plainly that no discount was read, and does not pass a price off as a yes', async () => {
+    const repo = await freshRepo();
+    // The Cesar exactly as it is saved today: no discount on the row at all.
+    const { orderId } = await seed(repo, [
+      {
+        displayName: 'CESAR FILET MIGNON 2.7 LB',
+        casePrice: Money.of('29.39').toStorage(),
+        unitsPerCase: 4,
+        trueUnitCost: Money.of('7.35').toStorage(),
+        suggestedPrice: Money.of('10.99').toStorage(),
+      },
+    ]);
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'Did you record a $1.40 flyer discount on the Cesar Filet Mignon?',
+    );
+
+    expect(answer.text).toContain('no discount was recorded');
+    // The old reply was the price line, which reads as confirmation that it was recorded.
+    expect(answer.text).toContain('too high');
+    expect(answer.text).toContain('cannot confirm an amount I did not read');
+  });
+
+  it('does not accept a figure typed in chat as something it read', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await seed(repo, [
+      {
+        displayName: 'CESAR FILET MIGNON 2.7 LB',
+        casePrice: Money.of('29.39').toStorage(),
+        unitsPerCase: 4,
+        trueUnitCost: Money.of('7.35').toStorage(),
+      },
+    ]);
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'Did you record a $1.40 flyer discount on the Cesar Filet Mignon?',
+    );
+
+    // It must not repeat the shopkeeper's number back as though it were evidence.
+    expect(answer.text).not.toContain('$1.40');
+    expect(answer.text).not.toContain('7.00');
+    // And the stored cost is untouched by the question.
+    expect(Money.fromStorage((await repo.itemsFor(orderId))[0]!.trueUnitCost!).format()).toBe('$7.35');
+  });
+
+  it('reports a discount it did read, and whether it is in the cost', async () => {
+    const repo = await freshRepo();
+    const { orderId, items } = await seed(repo, [
+      {
+        displayName: 'PAMPERS JUMBO DIAPERS SIZE 6',
+        casePrice: Money.of('45.99').toStorage(),
+        unitsPerCase: 4,
+        trueUnitCost: Money.of('9.75').toStorage(),
+      },
+    ]);
+    await repo.updateItem(items[0]!.id, {
+      discount: {
+        description: 'Flyer',
+        amount: Money.of('7.00').toStorage(),
+        scope: DiscountScope.WHOLE_CASE,
+        appliesToUnits: null,
+      },
+    });
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'what flyer discount did you read for the pampers',
+    );
+
+    expect(answer.text).toContain('$7.00 was read from the receipt');
+    expect(answer.text).toContain('$9.75');
+  });
+
+  it('says a read discount is not applied when the scope is still open', async () => {
+    const repo = await freshRepo();
+    const { orderId, items } = await seed(repo, [
+      {
+        displayName: 'PAMPERS JUMBO DIAPERS SIZE 6',
+        casePrice: Money.of('45.99').toStorage(),
+        unitsPerCase: 4,
+        trueUnitCost: Money.of('11.50').toStorage(),
+      },
+    ]);
+    await repo.updateItem(items[0]!.id, {
+      discount: {
+        description: 'Flyer',
+        amount: Money.of('7.00').toStorage(),
+        scope: DiscountScope.UNKNOWN,
+        appliesToUnits: null,
+      },
+    });
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'was there a discount on the pampers');
+
+    expect(answer.text).toContain('$7.00 was read from the receipt');
+    expect(answer.text).toContain('not in the cost');
   });
 });
