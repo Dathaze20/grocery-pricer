@@ -1,5 +1,5 @@
 import { Money } from './money';
-import { DiscountScope } from './models';
+import { DiscountScope, scopeFromReceiptText } from './models';
 import { discountScopeFrom } from './ai-parse';
 import type { AiExtractedDiscount, AiExtractedItem, AiOrderExtraction } from './ai-types';
 import { NameNormalizer, SizeParser, sizeCanonical } from './matching';
@@ -136,7 +136,13 @@ function validateItem(
     casesPurchased = item.casesPurchased;
   }
 
-  const discount = validateDiscount(item.discount ?? null, casePrice, unitsPerCase, issues);
+  const discount = validateDiscount(
+    item.discount ?? null,
+    casePrice,
+    unitsPerCase,
+    issues,
+    item.sourceText,
+  );
 
   let confidence: number;
   if (Number.isNaN(item.confidence)) {
@@ -214,6 +220,7 @@ function validateDiscount(
   casePrice: Money | null,
   unitsPerCase: number | null,
   issues: ExtractionIssue[],
+  sourceText: readonly string[] = [],
 ): AiExtractedDiscount | null {
   if (discount === null) return null;
 
@@ -233,6 +240,24 @@ function validateDiscount(
 
   const scope = discountScopeFrom(discount.scope);
   if (discount.scope !== null && discount.scope !== undefined && scope === null) {
+    issues.push(ExtractionIssue.UNKNOWN_DISCOUNT_SCOPE);
+  }
+
+  /*
+   * A discount that is read but cannot be applied has to be visible.
+   *
+   * This guard used to fire only when the scope string was unparseable - never when the model
+   * answered UNKNOWN, which is the answer the prompt explicitly asks for whenever a receipt
+   * does not spell out what a discount applies to. A wholesale flyer line almost never spells
+   * it out, so the ordinary case produced a row carrying a discount, silently not applying it,
+   * and flagging nothing. The cost on screen was then the undiscounted one, and looked settled.
+   */
+  // Before asking, read the receipt. A line that says Flyer and nothing about units settles
+  // this on its own, and forty-five taps to confirm what the paper already says is not care.
+  const fromText = scope === DiscountScope.UNKNOWN ? scopeFromReceiptText(sourceText) : null;
+  const settled = fromText ?? scope;
+
+  if (amount !== null && settled === DiscountScope.UNKNOWN) {
     issues.push(ExtractionIssue.UNKNOWN_DISCOUNT_SCOPE);
   }
 
@@ -256,8 +281,9 @@ function validateDiscount(
 
   return {
     amount: amount?.toPlainString() ?? null,
-    // An unreadable scope must never silently become "take it off the whole case".
-    scope: scope ?? DiscountScope.UNKNOWN,
+    // An unreadable scope must never silently become "take it off the whole case" - only the
+    // receipt's own words may do that, and only when nothing contradicts them.
+    scope: settled ?? DiscountScope.UNKNOWN,
     appliesToUnits,
   };
 }

@@ -2,7 +2,7 @@ import { aiErrorMessage, isFatalForRun, isTransient, OrderImageType, type AiErro
 import { mergeExtractions, validateExtraction, ExtractionIssue, type ValidatedItem } from '../core/ai-validate';
 import { CostCalculator } from '../core/cost';
 import { Money } from '../core/money';
-import { ItemConfidence, categoryFromName, guessCategory, makeDiscount, type ReceiptDiscount } from '../core/models';
+import { ItemConfidence, categoryFromName, guessCategory, makeDiscount, type ReceiptDiscount, APPROVED_PRICE_BELOW_COST, approvedPriceIsBelowCost } from '../core/models';
 import { DiscountScope } from '../core/models';
 import { PricingEngine, defaultPricingRules, type PricingRules } from '../core/pricing';
 import type { AiProvider, IdentifiedImage } from '../ai/provider';
@@ -324,9 +324,31 @@ async function priceOne(
       : guessCategory(displayName);
 
   const casePrice = Money.parseOrNull(item.casePrice);
-  const unitsPerCase = item.unitsPerCase ?? null;
   const casesPurchased = item.casesPurchased ?? 1;
   const discount = toDiscount(item.discount);
+
+  const product = await repo.findOrCreateProduct({
+    displayName: displayName.length > 0 ? displayName : (item.rawName ?? 'Unnamed item'),
+    size: item.size ?? null,
+    upc: item.upc ?? null,
+    supplierSku: item.supplierSku ?? null,
+    // The abbreviation as printed, so the next receipt recognises it without asking the model.
+    receiptName: item.rawName ?? null,
+    category,
+    unitsPerCase: item.unitsPerCase ?? null,
+  });
+
+  /*
+   * The receipt first, then what the shop already established.
+   *
+   * A printed pack count is evidence from this delivery and wins. When the line does not print
+   * one - which is why the Febreze had no cost at all - the count somebody verified earlier is
+   * used instead of leaving the row blank and asking again.
+   */
+  const unitsPerCase = item.unitsPerCase ?? product.unitsPerCase ?? null;
+  if (item.unitsPerCase != null && product.unitsPerCase == null) {
+    await repo.rememberUnitsPerCase(product.id, item.unitsPerCase);
+  }
 
   let trueUnitCost: Money | null = null;
   let totalWholesaleCost: Money | null = null;
@@ -340,16 +362,6 @@ async function priceOne(
     trueUnitCost = breakdown.trueUnitCost;
     totalWholesaleCost = breakdown.totalWholesaleCost;
   }
-
-  const product = await repo.findOrCreateProduct({
-    displayName: displayName.length > 0 ? displayName : (item.rawName ?? 'Unnamed item'),
-    size: item.size ?? null,
-    upc: item.upc ?? null,
-    supplierSku: item.supplierSku ?? null,
-    // The abbreviation as printed, so the next receipt recognises it without asking the model.
-    receiptName: item.rawName ?? null,
-    category,
-  });
 
   const suggestion = engine.suggest({
     unitCost: trueUnitCost,
@@ -400,18 +412,19 @@ async function priceOne(
 /**
  * A price the owner approved once is not revised because the supplier put the cost up - it is
  * their price. But a price that is now under the new cost loses money on every sale, and
- * nobody notices that from a shelf tag, so it is flagged here.
+ * nobody notices that from a shelf tag, so it is flagged.
+ *
+ * Re-exported from core, where the rule itself lives, so that reading a receipt and correcting
+ * a row afterwards cannot reach different verdicts about the same product.
  */
-export const APPROVED_PRICE_BELOW_COST = 'APPROVED_PRICE_BELOW_COST';
+export { APPROVED_PRICE_BELOW_COST };
 
 function costWarnings(
   product: { lastRetailPrice: number | null },
   trueUnitCost: Money | null,
 ): string[] {
-  if (product.lastRetailPrice === null || trueUnitCost === null) return [];
-  return Money.fromStorage(product.lastRetailPrice).lessThan(trueUnitCost)
-    ? [APPROVED_PRICE_BELOW_COST]
-    : [];
+  const approved = product.lastRetailPrice === null ? null : Money.fromStorage(product.lastRetailPrice);
+  return approvedPriceIsBelowCost(approved, trueUnitCost) ? [APPROVED_PRICE_BELOW_COST] : [];
 }
 
 function confidenceOf(accepted: ValidatedItem): ItemConfidence {

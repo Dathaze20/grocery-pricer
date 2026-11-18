@@ -1,7 +1,9 @@
 import type { IDBPDatabase } from 'idb';
 import { Money } from '../core/money';
 import { NameNormalizer, normalizeUpc, upcEquivalent } from '../core/matching';
-import { Category, guessCategory } from '../core/models';
+import { Category, DiscountScope, guessCategory, makeDiscount, APPROVED_PRICE_BELOW_COST, approvedPriceIsBelowCost } from '../core/models';
+import { CostCalculator } from '../core/cost';
+import { PricingEngine, defaultPricingRules, type PricingRules } from '../core/pricing';
 import { openGroceryDb, type GroceryDb } from './db';
 import {
   DB_NAME,
@@ -291,6 +293,165 @@ export class Repository {
    * history in the same breath - so the next order can say "you sold this at $4.99 last time"
    * without anyone having to remember.
    */
+  /**
+   * Applies a correction the shopkeeper makes to one row, and re-does the arithmetic.
+   *
+   * Two things a receipt often does not say: what a flyer discount applies to, and how many
+   * pieces are in a pack. Both are knowable - by the person holding the case - and neither is
+   * anything this app should guess. This is where their answer goes.
+   *
+   * What it recomputes is cost and the suggested price. What it never touches is the price the
+   * owner approved: that is their decision about what to charge, and a correction to the cost
+   * is not permission to overwrite it.
+   */
+  async reviseItem(
+    itemId: number,
+    change: { scope?: DiscountScope; unitsPerCase?: number },
+    rules: PricingRules = defaultPricingRules(),
+  ): Promise<StoredItem | null> {
+    const item = await this.item(itemId);
+    if (item === null) return null;
+
+    const unitsPerCase = change.unitsPerCase ?? item.unitsPerCase;
+    const casePrice = item.casePrice === null ? null : Money.fromStorage(item.casePrice);
+
+    const discount =
+      item.discount === null
+        ? null
+        : makeDiscount(
+            item.discount.description,
+            Money.fromStorage(item.discount.amount),
+            change.scope ?? item.discount.scope,
+            item.discount.appliesToUnits ?? null,
+          );
+
+    let trueUnitCost: number | null = null;
+    let totalWholesaleCost: number | null = null;
+    if (casePrice !== null && unitsPerCase !== null && unitsPerCase > 0) {
+      const breakdown = CostCalculator.calculate({
+        casePrice,
+        unitsPerCase,
+        casesPurchased: item.casesPurchased,
+        discount,
+      });
+      trueUnitCost = breakdown.trueUnitCost.toStorage();
+      totalWholesaleCost = breakdown.totalWholesaleCost.toStorage();
+    }
+
+    const product = item.productId === null ? null : await this.product(item.productId);
+    const suggestion = new PricingEngine(rules).suggest({
+      unitCost: trueUnitCost === null ? null : Money.fromStorage(trueUnitCost),
+      category: item.category,
+      previousRetailPrice:
+        product?.lastRetailPrice != null ? Money.fromStorage(product.lastRetailPrice) : null,
+      productOverridePrice:
+        product?.overridePrice != null ? Money.fromStorage(product.overridePrice) : null,
+    });
+
+    // The questions this row was flagged for have been answered, so the flags go.
+    const settled = item.issues.filter(
+      (issue) =>
+        !(change.scope !== undefined && issue === 'UNKNOWN_DISCOUNT_SCOPE') &&
+        !(change.unitsPerCase !== undefined && issue === 'MISSING_UNITS_PER_CASE') &&
+        // Decided again below against the corrected cost, so the stale verdict goes first.
+        issue !== APPROVED_PRICE_BELOW_COST,
+    );
+
+    /*
+     * Whether the owner's price still covers the cost, asked again.
+     *
+     * A correction moves the cost, and the cost is half of that comparison. Correcting a pack
+     * count upward raises the cost each and can leave an approved price underwater without
+     * anything saying so; correcting a discount downward can clear a warning that is no longer
+     * true. Both directions, or the flag means nothing.
+     *
+     * The row's own approved price first - it is the decision about this product - falling back
+     * to what the product was last sold for, which is what the receipt reading compares against.
+     */
+    const approvedPrice =
+      item.approvedPrice ?? product?.lastRetailPrice ?? null;
+    if (
+      approvedPriceIsBelowCost(
+        approvedPrice === null ? null : Money.fromStorage(approvedPrice),
+        trueUnitCost === null ? null : Money.fromStorage(trueUnitCost),
+      )
+    ) {
+      settled.push(APPROVED_PRICE_BELOW_COST);
+    }
+
+    // A count the owner established is worth keeping: it is the same pack next month.
+    if (change.unitsPerCase !== undefined && item.productId !== null) {
+      await this.rememberUnitsPerCase(item.productId, change.unitsPerCase);
+    }
+
+    const revised = await this.updateItem(itemId, {
+      unitsPerCase,
+      discount:
+        discount === null
+          ? null
+          : {
+              description: discount.description,
+              amount: discount.amount.toStorage(),
+              scope: discount.scope,
+              appliesToUnits: discount.appliesToUnits ?? null,
+            },
+      trueUnitCost,
+      totalWholesaleCost,
+      suggestedPrice: suggestion.suggestedPrice.toStorage(),
+      pricingSource: suggestion.source,
+      pricingRationale: suggestion.rationale,
+      issues: settled,
+    });
+
+    // The row is not the only place that figure appears. An order summary still showing the
+    // uncorrected total, or a product still remembering the uncorrected cost, is the same
+    // wrong number surviving in a quieter place.
+    await this.recomputeOrderTotal(item.orderId);
+    if (item.productId !== null && trueUnitCost !== null) {
+      await this.refreshLastCost(item.productId, item.orderId, trueUnitCost);
+    }
+
+    return revised;
+  }
+
+  /**
+   * Re-adds the order's wholesale total from its rows.
+   *
+   * Summed rather than adjusted by a difference: an adjustment has to be right about what the
+   * old figure was, and a total that drifts is worse than one that is simply recomputed. Only
+   * the total moves - the status, the warnings and every approved price are left alone.
+   */
+  private async recomputeOrderTotal(orderId: number): Promise<void> {
+    const items = await this.itemsFor(orderId);
+    const total = items.reduce(
+      (sum, row) => (row.totalWholesaleCost === null ? sum : sum.plus(Money.fromStorage(row.totalWholesaleCost))),
+      Money.ZERO,
+    );
+    await this.updateOrder(orderId, { totalWholesaleCost: total.toStorage() });
+  }
+
+  /**
+   * Updates what this product last cost, but only when the correction is to its latest order.
+   *
+   * Correcting a receipt from three months ago must not overwrite what the product costs now.
+   * lastCost means the most recent purchase, so an older order's correction leaves it alone -
+   * and the price history, which is the record of what was actually paid and when, is never
+   * rewritten by a correction either.
+   */
+  private async refreshLastCost(
+    productId: number,
+    orderId: number,
+    trueUnitCost: number,
+  ): Promise<void> {
+    const rows = await this.db.getAllFromIndex('items', 'productId', productId);
+    const latestOrder = rows.reduce((newest, row) => Math.max(newest, row.orderId), 0);
+    if (orderId < latestOrder) return;
+
+    const product = await this.db.get('products', productId);
+    if (product === undefined) return;
+    await this.db.put('products', { ...product, lastCost: trueUnitCost });
+  }
+
   async approvePrice(itemId: number, price: Money): Promise<StoredItem | null> {
     const item = await this.item(itemId);
     if (item === null) return null;
@@ -333,6 +494,7 @@ export class Repository {
     supplierSku?: string | null;
     receiptName?: string | null;
     category?: Category;
+    unitsPerCase?: number | null;
   }): Promise<StoredProduct> {
     const normalized = NameNormalizer.normalize(input.displayName);
     const alias = NameNormalizer.normalize(input.receiptName ?? '');
@@ -389,6 +551,7 @@ export class Repository {
       // A brand-new product has confirmed nothing yet.
       aliases: [],
       category: input.category ?? guessCategory(input.displayName),
+      unitsPerCase: input.unitsPerCase ?? null,
       lastCost: null,
       lastRetailPrice: null,
       overridePrice: null,
@@ -428,6 +591,14 @@ export class Repository {
     const product = await this.db.get('products', productId);
     if (product === undefined || product.aliases.includes(alias)) return;
     await this.db.put('products', { ...product, aliases: [...product.aliases, alias] });
+  }
+
+  /** Writes down a pack count once, so the same case is never counted twice. */
+  async rememberUnitsPerCase(productId: number, unitsPerCase: number): Promise<void> {
+    if (!Number.isInteger(unitsPerCase) || unitsPerCase <= 0) return;
+    const product = await this.db.get('products', productId);
+    if (product === undefined) return;
+    await this.db.put('products', { ...product, unitsPerCase });
   }
 
   private async touchProduct(product: StoredProduct, alias = ''): Promise<StoredProduct> {
