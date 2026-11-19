@@ -8,7 +8,7 @@ import { Repository } from '../../data/repository';
 import { resetDbHandle } from '../../data/db';
 import { OrderStatus, MessageRole, type StoredPhoto, isIncomplete } from '../../data/schema';
 import { OrderImageType, type AiExtractedItem } from '../../core/ai-types';
-import { APPROVED_PRICE_BELOW_COST, processOrder } from '../processing';
+import { APPROVED_PRICE_BELOW_COST, GROUP_REQUEST_BUDGET, processOrder } from '../processing';
 
 let dbCounter = 0;
 
@@ -1265,5 +1265,325 @@ describe('saying which photographs went unread', () => {
 
     const saved = (await repo.order(orderId))!;
     expect(saved.warnings.filter((w) => /^Photos? \d/.test(w))).toHaveLength(0);
+  });
+});
+
+describe('recovering a reply that was cut off', () => {
+  async function orderWith(repo: Repository, count: number): Promise<number> {
+    const order = await repo.createOrder();
+    for (let i = 0; i < count; i += 1) {
+      await repo.addPhoto({
+        orderId: order.id,
+        bytes: photoBytes(),
+        mimeType: 'image/jpeg',
+        type: OrderImageType.RECEIPT,
+        isDeliveryPhoto: false,
+        createdAt: 2000 + i,
+      });
+    }
+    return order.id;
+  }
+
+  it('reads the photographs one at a time instead of losing the pair', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 2);
+    const provider = new FakeAiProvider();
+    // The failure both real receipts hit: the answer ran past one reply.
+    provider.queueFailure({ kind: 'truncated' });
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [extractedItem({ rawName: 'FIRST PRODUCT', canonicalName: 'First Product', casePrice: '10.00' })],
+      warnings: [],
+    });
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [extractedItem({ rawName: 'SECOND PRODUCT', canonicalName: 'Second Product', casePrice: '20.00' })],
+      warnings: [],
+    });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    // Nothing lost, and nothing to apologise for.
+    expect(result.outcome).toBe('complete');
+    const names = (await repo.itemsFor(orderId)).map((r) => r.rawName).sort();
+    expect(names).toEqual(['FIRST PRODUCT', 'SECOND PRODUCT']);
+    expect((await repo.order(orderId))!.warnings.filter((w) => /^Photos? \d/.test(w))).toHaveLength(0);
+    // One try at the pair, then one at each photograph - the split really happened.
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(3);
+  });
+
+  it('keeps the photograph that reads and names the one that does not', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 2);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'truncated' });
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [extractedItem({ rawName: 'FIRST PRODUCT', canonicalName: 'First Product', casePrice: '10.00' })],
+      warnings: [],
+    });
+    provider.queueFailure({ kind: 'truncated' });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(result.outcome).toBe('partial');
+    expect((await repo.itemsFor(orderId)).map((r) => r.rawName)).toEqual(['FIRST PRODUCT']);
+    const failure = (await repo.order(orderId))!.warnings.find((w) => /^Photo 2/.test(w));
+    expect(failure).toBeDefined();
+    expect(failure).toContain('on its own');
+  });
+
+  it('splits once and never again, so a run cannot spin', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 2);
+    const provider = new FakeAiProvider();
+    // Everything truncates, always.
+    for (let i = 0; i < 10; i += 1) provider.queueFailure({ kind: 'truncated' });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    // One attempt at the pair, then one at each photograph. Three calls, not a loop.
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(3);
+  });
+
+  it('does not store a product twice when the split recovers it', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 2);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'truncated' });
+    // The same product read off both photographs, as an overlap would give.
+    const shared = extractedItem({ rawName: 'OVERLAPPING PRODUCT', upc: '012345678905' });
+    provider.queueExtraction({ supplier: 'SUPPLIER', items: [shared], warnings: [] });
+    provider.queueExtraction({ supplier: 'SUPPLIER', items: [shared], warnings: [] });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const rows = await repo.itemsFor(orderId);
+    expect(rows.filter((r) => r.rawName === 'OVERLAPPING PRODUCT')).toHaveLength(1);
+  });
+
+  it('stops on a spent quota found during the split instead of blaming the photograph', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 4);
+    const provider = new FakeAiProvider();
+    // The first pair reads, the second is cut off, and the quota runs out on the split.
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [extractedItem({ rawName: 'FIRST PRODUCT', canonicalName: 'First Product', casePrice: '10.00' })],
+      warnings: [],
+    });
+    provider.queueFailure({ kind: 'truncated' });
+    provider.queueFailure({ kind: 'quotaExhausted' });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(result.ok).toBe(false);
+    expect(result.outcome).toBe('failed');
+    // The run stopped there - it did not go on to the fourth photograph.
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(3);
+    // And the order is exactly as it was found, products and prices untouched.
+    expect(await repo.itemsFor(orderId)).toHaveLength(0);
+  });
+
+  it('does not split a group of one - there is nothing to split', async () => {
+    const repo = await freshRepo();
+    const orderId = await orderWith(repo, 1);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'truncated' });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(1);
+  });
+});
+
+describe('the two kinds of failure together', () => {
+  async function pairOrder(repo: Repository): Promise<number> {
+    const order = await repo.createOrder();
+    for (let i = 0; i < 2; i += 1) {
+      await repo.addPhoto({
+        orderId: order.id,
+        bytes: photoBytes(),
+        mimeType: 'image/jpeg',
+        type: OrderImageType.RECEIPT,
+        isDeliveryPhoto: false,
+        createdAt: 2000 + i,
+      });
+    }
+    return order.id;
+  }
+
+  it('costs one group no more than its budget when busy and cut off combine', async () => {
+    const repo = await freshRepo();
+    const orderId = await pairOrder(repo);
+    const provider = new FakeAiProvider();
+    // Busy, busy, then cut off - so the retries are spent and the split still happens.
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueFailure({ kind: 'truncated' });
+    // And the same again for each photograph on its own, if it were allowed.
+    for (let i = 0; i < 2; i += 1) {
+      provider.queueFailure({ kind: 'overloaded' });
+      provider.queueFailure({ kind: 'overloaded' });
+      provider.queueFailure({ kind: 'truncated' });
+    }
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    // Nine requests without a budget. Five with one.
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(
+      GROUP_REQUEST_BUDGET,
+    );
+  });
+
+  it('still reads each photograph once when the pair has used the retries', async () => {
+    const repo = await freshRepo();
+    const orderId = await pairOrder(repo);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueFailure({ kind: 'truncated' });
+    // Both photographs read on the one attempt each has left.
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [
+        extractedItem({ rawName: 'FIRST PRODUCT', canonicalName: 'First Product', casePrice: '10.00' }),
+      ],
+      warnings: [],
+    });
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [
+        extractedItem({ rawName: 'SECOND PRODUCT', canonicalName: 'Second Product', casePrice: '20.00' }),
+      ],
+      warnings: [],
+    });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(result.outcome).toBe('complete');
+    const names = (await repo.itemsFor(orderId)).map((r) => r.rawName).sort();
+    expect(names).toEqual(['FIRST PRODUCT', 'SECOND PRODUCT']);
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(5);
+  });
+
+  it('tells a photograph that stayed busy apart from one that was cut off', async () => {
+    const repo = await freshRepo();
+    const orderId = await pairOrder(repo);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'truncated' });
+    // The first photograph is busy on its one attempt, the second is cut off on its own.
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueFailure({ kind: 'truncated' });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    // Neither read, and the order is left exactly as it was - not a half-read one.
+    expect(result.ok).toBe(false);
+    expect(await repo.itemsFor(orderId)).toHaveLength(0);
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder')).length).toBeLessThanOrEqual(
+      GROUP_REQUEST_BUDGET,
+    );
+  });
+
+  it('names the busy photograph as busy, not as a reply that was too long', async () => {
+    const repo = await freshRepo();
+    const order = await repo.createOrder();
+    for (let i = 0; i < 4; i += 1) {
+      await repo.addPhoto({
+        orderId: order.id,
+        bytes: photoBytes(),
+        mimeType: 'image/jpeg',
+        type: OrderImageType.RECEIPT,
+        isDeliveryPhoto: false,
+        createdAt: 2000 + i,
+      });
+    }
+    const provider = new FakeAiProvider();
+    // The first pair reads, so there is something to keep.
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [
+        extractedItem({ rawName: 'FIRST PRODUCT', canonicalName: 'First Product', casePrice: '10.00' }),
+      ],
+      warnings: [],
+    });
+    // The second pair is cut off; photo 3 stays busy, photo 4 reads.
+    provider.queueFailure({ kind: 'truncated' });
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [
+        extractedItem({ rawName: 'FOURTH PRODUCT', canonicalName: 'Fourth Product', casePrice: '40.00' }),
+      ],
+      warnings: [],
+    });
+
+    const result = await processOrder(repo, provider, order.id, { retryDelayMs: 0 });
+
+    // What read is kept, and the order does not claim to be whole.
+    expect(result.outcome).toBe('partial');
+    const names = (await repo.itemsFor(order.id)).map((r) => r.rawName).sort();
+    expect(names).toEqual(['FIRST PRODUCT', 'FOURTH PRODUCT']);
+
+    // Photo 3 is named, and named as busy - the real reason, not the group's reason.
+    const failure = (await repo.order(order.id))!.warnings.find((w) => /^Photo 3/.test(w));
+    expect(failure).toBeDefined();
+    expect(failure).not.toContain('too long');
+    expect(failure!.toLowerCase()).toContain('busy');
+  });
+});
+
+describe('a model that says it is busy', () => {
+  it('is given two more tries before the group is written off', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueFailure({ kind: 'overloaded' });
+    provider.queueExtraction({ supplier: 'SUPPLIER', items: [extractedItem()], warnings: [] });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    // The real receipt lost a group to one retry a second and a half later.
+    expect(result.ok).toBe(true);
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(3);
+  });
+
+  it('stops after those tries rather than going on for ever', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    for (let i = 0; i < 10; i += 1) provider.queueFailure({ kind: 'overloaded' });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(3);
+  });
+
+  it('still does not re-send a request that ran out of time', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'timeout' });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(1);
+  });
+
+  it('gives a rejected key no retries at all', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueFailure({ kind: 'invalidKey' });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(1);
   });
 });

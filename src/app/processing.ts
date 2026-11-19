@@ -21,6 +21,18 @@ import { toImagePart } from './images';
  */
 export const PHOTOS_PER_BATCH = 2;
 
+/**
+ * The most requests one group of photographs may cost, however its failures combine.
+ *
+ * Retrying a busy model and re-reading a cut-off reply are each bounded on their own, but they
+ * multiply: a pair told twice that the model is busy and then cut off, whose photographs are
+ * each told the same again, is nine requests for one group - and four groups of that is
+ * thirty-six. The budget is what makes the ceiling a ceiling. One request per photograph is
+ * always held back from it, so a group can never spend its whole allowance on retrying the pair
+ * and leave a photograph with no attempt of its own.
+ */
+export const GROUP_REQUEST_BUDGET = 5;
+
 export interface ProcessOptions {
   readonly rules?: PricingRules;
   /** Injected so tests do not sit through a retry delay. */
@@ -184,9 +196,102 @@ export async function processOrder(
     batchesAttempted += 1;
     const batch = paperwork.slice(i, i + PHOTOS_PER_BATCH);
     progress(`Reading photo ${i + 1} of ${paperwork.length}`);
-    const result = await time(`extract-${i / PHOTOS_PER_BATCH + 1}`, () =>
-      withOneRetry(() => provider.extractOrder(batch), options.retryDelayMs),
+    const group = i / PHOTOS_PER_BATCH + 1;
+    const budget = { left: GROUP_REQUEST_BUDGET };
+    // Held back for the photographs, should this reply come back cut off.
+    const held = batch.length > 1 ? batch.length : 0;
+    const result = await time(`extract-${group}`, () =>
+      withRetries(() => provider.extractOrder(batch), options.retryDelayMs, budget, held),
     );
+
+    /*
+     * A cut-off reply is about how much came back, so send less and ask again.
+     *
+     * This is the failure two real Jetro receipts actually hit: the model answered, the answer
+     * ran past what one reply may hold, and the whole group was thrown away - two photographs'
+     * worth of products lost to one reply being too long. Reading the photographs one at a time
+     * halves what each reply has to carry, and a photograph that reads on its own is a
+     * photograph recovered rather than a hole in the order.
+     *
+     * Only ever split once, and only a group of more than one, so there is no way to loop. The
+     * requests come out of the group's budget, so recovery and retries together cannot cost
+     * more than GROUP_REQUEST_BUDGET for one group.
+     */
+    if (!result.ok && result.error.kind === 'truncated' && batch.length > 1) {
+      const recovered: AiOrderExtraction[] = [];
+      const lost: Array<{ image: IdentifiedImage; error: AiError }> = [];
+
+      for (let part = 0; part < batch.length; part += 1) {
+        const single = batch[part]!;
+        progress(`Reading photo ${i + part + 1} of ${paperwork.length} on its own`);
+        const one = await time(`extract-${group}-split`, () =>
+          withRetries(
+            () => provider.extractOrder([single]),
+            options.retryDelayMs,
+            budget,
+            batch.length - part - 1,
+          ),
+        );
+        if (one.ok) {
+          recovered.push(one.value);
+          continue;
+        }
+
+        // A spent quota or a rejected key stops the run here, exactly as it would outside a
+        // split. Recording it as a photograph that read badly would be a lie about why.
+        if (isFatalForRun(one.error)) {
+          return fail(
+            repo,
+            orderId,
+            one.error,
+            aiErrorMessage(one.error),
+            order.status,
+            existing,
+            timings,
+          );
+        }
+        lost.push({ image: single, error: one.error });
+      }
+
+      if (recovered.length > 0) batches.push(...recovered);
+      if (lost.length === 0) continue;
+
+      // Nothing at all has read yet. Carrying on through the rest of the receipt would spend
+      // calls on what looks like a problem with every photograph, so stop as the plain path does.
+      if (batches.length === 0) {
+        const first = lost[0]!.error;
+        return fail(
+          repo,
+          orderId,
+          first,
+          aiErrorMessage(first),
+          order.status,
+          existing,
+          timings,
+        );
+      }
+
+      // Some of the group came back and some did not. What was read is kept; each photograph
+      // that did not is named with its own reason, so the owner knows what to take again.
+      batchesFailed += 1;
+      for (const { image, error } of lost) {
+        batches.push({
+          supplier: null,
+          items: [],
+          warnings: [
+            groupFailureWarning(
+              [image],
+              photos,
+              error.kind === 'truncated'
+                ? 'the reply was still too long to come back in one piece, even on its own.'
+                : aiErrorMessage(error),
+            ),
+          ],
+        });
+      }
+      continue;
+    }
+
     if (!result.ok) {
       // A spent quota or a rejected key will not fix itself on the next batch. Stopping here
       // keeps a half-read order from being presented as a whole one.
@@ -453,26 +558,62 @@ function scopeOf(raw: string | null | undefined): DiscountScope {
     : DiscountScope.UNKNOWN;
 }
 
-async function withOneRetry<T>(
+/**
+ * How many more times a failure of this kind is worth trying.
+ *
+ * Being told the model is busy is Google's capacity, not anything about the request, and it
+ * usually passes - a real receipt lost a group of photographs to exactly that after a single
+ * retry a second and a half later. Two further tries, spaced out, cost two calls and recover
+ * the group. Everything else transient keeps the one retry it had, and a timeout still gets
+ * none: the same photographs going out again would spend another ninety seconds without being
+ * any more likely to finish.
+ */
+function retriesFor(error: AiError): number {
+  if (error.kind === 'timeout') return 0;
+  if (error.kind === 'overloaded' || error.kind === 'rateLimited') return 2;
+  return isTransient(error) ? 1 : 0;
+}
+
+/** Spaced out, so a second attempt is not made into the same busy moment. */
+function backoffMs(attempt: number, error: AiError, base: number): number {
+  if (base <= 0) return 0;
+  const hinted =
+    error.kind === 'rateLimited' && typeof error.retryAfterSeconds === 'number'
+      ? Math.min(error.retryAfterSeconds, 10) * 1000
+      : 0;
+  return Math.max(hinted, base * Math.pow(3, attempt));
+}
+
+/**
+ * Calls, and tries again where that is worth doing, within the group's remaining budget.
+ *
+ * `held` is how many requests must be left for work still to come - the photographs of a group
+ * that may yet need reading one at a time, or those after this one. The first call always
+ * happens: a photograph is never passed over for want of budget, it is only denied its retries.
+ */
+async function withRetries<T>(
   call: () => Promise<T & { ok: boolean; error?: AiError }>,
   delayMs = 1500,
+  budget: { left: number } = { left: Number.POSITIVE_INFINITY },
+  held = 0,
 ): Promise<T & { ok: boolean; error?: AiError }> {
-  const first = await call();
-  if (first.ok || first.error === undefined || !isTransient(first.error)) return first;
+  const spend = async (): Promise<T & { ok: boolean; error?: AiError }> => {
+    budget.left -= 1;
+    return call();
+  };
 
-  /*
-   * A timeout is not retried with the same payload.
-   *
-   * It was, and it is how a real shop came to watch one progress line for six minutes: the
-   * request ran its ninety seconds, failed, and the identical photographs went out again to
-   * spend another ninety. Nothing about the second attempt was more likely to finish. Being
-   * busy or briefly unreachable is worth one more try; being too slow for the payload is a
-   * reason to make the payload smaller, which is what the batch size now does.
-   */
-  if (first.error.kind === 'timeout') return first;
+  let result = await spend();
 
-  if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-  return call();
+  for (let attempt = 0; ; attempt += 1) {
+    if (result.ok || result.error === undefined) return result;
+    if (attempt >= retriesFor(result.error)) return result;
+    // A retry is the first thing given up when the group is running out of requests.
+    if (budget.left - held <= 0) return result;
+
+    const wait = backoffMs(attempt, result.error, delayMs);
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    result = await spend();
+  }
 }
 
 /**
