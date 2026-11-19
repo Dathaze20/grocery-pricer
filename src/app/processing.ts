@@ -21,6 +21,18 @@ import { toImagePart } from './images';
  */
 export const PHOTOS_PER_BATCH = 2;
 
+/**
+ * The most requests one group of photographs may cost, however its failures combine.
+ *
+ * Retrying a busy model and re-reading a cut-off reply are each bounded on their own, but they
+ * multiply: a pair told twice that the model is busy and then cut off, whose photographs are
+ * each told the same again, is nine requests for one group - and four groups of that is
+ * thirty-six. The budget is what makes the ceiling a ceiling. One request per photograph is
+ * always held back from it, so a group can never spend its whole allowance on retrying the pair
+ * and leave a photograph with no attempt of its own.
+ */
+export const GROUP_REQUEST_BUDGET = 5;
+
 export interface ProcessOptions {
   readonly rules?: PricingRules;
   /** Injected so tests do not sit through a retry delay. */
@@ -185,8 +197,11 @@ export async function processOrder(
     const batch = paperwork.slice(i, i + PHOTOS_PER_BATCH);
     progress(`Reading photo ${i + 1} of ${paperwork.length}`);
     const group = i / PHOTOS_PER_BATCH + 1;
+    const budget = { left: GROUP_REQUEST_BUDGET };
+    // Held back for the photographs, should this reply come back cut off.
+    const held = batch.length > 1 ? batch.length : 0;
     const result = await time(`extract-${group}`, () =>
-      withRetries(() => provider.extractOrder(batch), options.retryDelayMs),
+      withRetries(() => provider.extractOrder(batch), options.retryDelayMs, budget, held),
     );
 
     /*
@@ -198,7 +213,9 @@ export async function processOrder(
      * halves what each reply has to carry, and a photograph that reads on its own is a
      * photograph recovered rather than a hole in the order.
      *
-     * Only ever split once, and only a group of more than one, so there is no way to loop.
+     * Only ever split once, and only a group of more than one, so there is no way to loop. The
+     * requests come out of the group's budget, so recovery and retries together cannot cost
+     * more than GROUP_REQUEST_BUDGET for one group.
      */
     if (!result.ok && result.error.kind === 'truncated' && batch.length > 1) {
       const recovered: AiOrderExtraction[] = [];
@@ -208,7 +225,12 @@ export async function processOrder(
         const single = batch[part]!;
         progress(`Reading photo ${i + part + 1} of ${paperwork.length} on its own`);
         const one = await time(`extract-${group}-split`, () =>
-          withRetries(() => provider.extractOrder([single]), options.retryDelayMs),
+          withRetries(
+            () => provider.extractOrder([single]),
+            options.retryDelayMs,
+            budget,
+            batch.length - part - 1,
+          ),
         );
         if (one.ok) {
           recovered.push(one.value);
@@ -562,19 +584,35 @@ function backoffMs(attempt: number, error: AiError, base: number): number {
   return Math.max(hinted, base * Math.pow(3, attempt));
 }
 
+/**
+ * Calls, and tries again where that is worth doing, within the group's remaining budget.
+ *
+ * `held` is how many requests must be left for work still to come - the photographs of a group
+ * that may yet need reading one at a time, or those after this one. The first call always
+ * happens: a photograph is never passed over for want of budget, it is only denied its retries.
+ */
 async function withRetries<T>(
   call: () => Promise<T & { ok: boolean; error?: AiError }>,
   delayMs = 1500,
+  budget: { left: number } = { left: Number.POSITIVE_INFINITY },
+  held = 0,
 ): Promise<T & { ok: boolean; error?: AiError }> {
-  let result = await call();
+  const spend = async (): Promise<T & { ok: boolean; error?: AiError }> => {
+    budget.left -= 1;
+    return call();
+  };
+
+  let result = await spend();
 
   for (let attempt = 0; ; attempt += 1) {
     if (result.ok || result.error === undefined) return result;
     if (attempt >= retriesFor(result.error)) return result;
+    // A retry is the first thing given up when the group is running out of requests.
+    if (budget.left - held <= 0) return result;
 
     const wait = backoffMs(attempt, result.error, delayMs);
     if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    result = await call();
+    result = await spend();
   }
 }
 
