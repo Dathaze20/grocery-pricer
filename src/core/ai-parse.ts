@@ -6,6 +6,7 @@ import {
   imageTypeFrom,
   type AiCaseCount,
   type AiCaseSighting,
+  type AiDiscountLine,
   type AiExtractedDiscount,
   type AiExtractedItem,
   type AiOrderExtraction,
@@ -149,6 +150,7 @@ export const AiResponseParser = {
     return aiOk({
       supplier: str(root, 'supplier'),
       items: objList(root, 'items').map(toExtractedItem),
+      discountLines: objList(root, 'discountLines').map(toDiscountLine),
       warnings: strList(root, 'warnings'),
     });
   },
@@ -343,6 +345,24 @@ function toExtractedItem(source: Json): AiExtractedItem {
     sourceText: strList(source, 'sourceText'),
     // A model that forgets to score itself is treated as unsure, never as certain.
     confidence: dbl(source, 'confidence') ?? 0,
+  };
+}
+
+/**
+ * One money-off line, kept whole and unattributed.
+ *
+ * Nothing is rejected here. A line with no amount, or an index pointing nowhere, is passed on as
+ * it arrived: deciding what is usable is the association step's job, and it has to be able to
+ * say why a line went unused.
+ */
+function toDiscountLine(source: Json): AiDiscountLine {
+  return {
+    amount: str(source, 'amount'),
+    productName: str(source, 'productName'),
+    appliesToIndex: int(source, 'appliesToIndex'),
+    reference: str(source, 'reference'),
+    sourcePhotoIds: numList(source, 'sourcePhotoIds'),
+    sourceText: strList(source, 'sourceText'),
   };
 }
 

@@ -35,9 +35,36 @@ export interface AiExtractedItem {
   readonly confidence: number;
 }
 
+/**
+ * One money-off line exactly as it sits on the paper, before anything decides whose it is.
+ *
+ * A wholesale receipt does not print a discount beside its product. It prints the product, the
+ * barcode, the case price, a flyer description, a flyer reference number, the amount off and a
+ * units line - seven lines, in that order, for one purchase. Asking a model to carry an amount
+ * backwards over four lines and nest it in the right object is asking it to do bookkeeping, and
+ * on a real seven-photograph order it did not: eighty-one products came back and not one
+ * discount. Asking it to list the lines it can see is a far smaller thing to get right.
+ *
+ * Which product each line belongs to is then decided here, by code, from the printed evidence.
+ */
+export interface AiDiscountLine {
+  /** The money off, as printed. Text until Money has parsed it. */
+  readonly amount?: string | null;
+  /** The product the line names, if it names one. */
+  readonly productName?: string | null;
+  /** 0-based index into `items`, when the model can tell whose line it is. */
+  readonly appliesToIndex?: number | null;
+  /** A flyer or promotion number printed with it, kept as evidence rather than used. */
+  readonly reference?: string | null;
+  readonly sourcePhotoIds: readonly number[];
+  readonly sourceText: readonly string[];
+}
+
 export interface AiOrderExtraction {
   readonly supplier: string | null;
   readonly items: readonly AiExtractedItem[];
+  /** Money-off lines seen on the paper, whether or not they were nested into an item. */
+  readonly discountLines?: readonly AiDiscountLine[];
   readonly warnings: readonly string[];
 }
 

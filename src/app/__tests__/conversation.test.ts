@@ -37,7 +37,7 @@ async function seed(
       unitsPerCase: row.unitsPerCase ?? 12,
       casesPurchased: row.casesPurchased ?? 1,
       looseUnits: 0,
-      discount: null,
+      discount: row.discount ?? null,
       trueUnitCost: row.trueUnitCost ?? Money.of('2.00').toStorage(),
       totalWholesaleCost: row.totalWholesaleCost ?? Money.of('24.00').toStorage(),
       suggestedPrice: row.suggestedPrice ?? Money.of('4.99').toStorage(),
@@ -538,7 +538,9 @@ describe('answering what the receipt actually recorded', () => {
       'what flyer discount did you read for the pampers',
     );
 
-    expect(answer.text).toContain('$7.00 was read from the receipt');
+    // The amount, and what it comes off: a $7.00 off the case and a $7.00 off each are
+    // different costs, so the answer says which.
+    expect(answer.text).toContain('$7.00 off the whole case was read from the receipt');
     expect(answer.text).toContain('$9.75');
   });
 
@@ -563,7 +565,168 @@ describe('answering what the receipt actually recorded', () => {
 
     const answer = await ask(repo, new FakeAiProvider(), orderId, 'was there a discount on the pampers');
 
-    expect(answer.text).toContain('$7.00 was read from the receipt');
+    expect(answer.text).toContain('$7.00');
+    expect(answer.text).toContain('was read from the receipt');
     expect(answer.text).toContain('not in the cost');
+  });
+});
+
+describe('asked about a discount, it answers about the discount', () => {
+  let repo: Repository;
+  beforeEach(async () => {
+    repo = await freshRepo();
+  });
+
+  it('says what was read off the receipt, and that it comes off the case', async () => {
+    const { orderId } = await seed(repo, [
+      {
+        displayName: 'DryNite Jumbo #6 21CT',
+        size: '21 CT',
+        casePrice: Money.of('45.99').toStorage(),
+        unitsPerCase: 4,
+        discount: {
+          description: 'Flyer',
+          amount: Money.of('7.00').toStorage(),
+          scope: DiscountScope.WHOLE_CASE,
+          appliesToUnits: null,
+        },
+        trueUnitCost: Money.of('9.7475').toStorage(),
+      },
+    ]);
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'Did you record a flyer discount for DryNite Jumbo Diapers 21CT?',
+    );
+
+    expect(answer.text).toContain('$7.00');
+    expect(answer.text.toLowerCase()).toContain('case');
+    // Answered from what is saved: no call, no cost to the shop.
+    expect(answer.usedAi).toBe(false);
+  });
+
+  it('says plainly that none was recorded, instead of quoting a price', async () => {
+    const { orderId } = await seed(repo, [
+      {
+        displayName: 'DryNite Jumbo #6 21CT',
+        size: '21 CT',
+        casePrice: Money.of('45.99').toStorage(),
+        unitsPerCase: 4,
+        trueUnitCost: Money.of('11.4975').toStorage(),
+        suggestedPrice: Money.of('15.99').toStorage(),
+      },
+    ]);
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'Did you record a flyer discount for DryNite Jumbo Diapers 21CT?',
+    );
+
+    expect(answer.text.toLowerCase()).toContain('no discount was recorded');
+    // The old answer was the selling price, which reads as a yes.
+    expect(answer.text).not.toContain('$15.99');
+    // And it says why that matters: the cost on the card is the undiscounted one.
+    expect(answer.text.toLowerCase()).toContain('too high');
+  });
+
+  it('will not confirm an amount the owner supplies in the chat', async () => {
+    const { orderId } = await seed(repo, [
+      {
+        displayName: 'Dog Dinner Filet 2.7 LB',
+        size: '2.7 LB',
+        casePrice: Money.of('29.39').toStorage(),
+        unitsPerCase: 4,
+        trueUnitCost: Money.of('7.3475').toStorage(),
+      },
+    ]);
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'What is my actual cost for Dog Dinner Filet 2.7 lb? Did you record a $1.40 flyer discount? If the discount is missing, tell me.',
+    );
+
+    expect(answer.text.toLowerCase()).toContain('no discount was recorded');
+    expect(answer.text.toLowerCase()).toContain('cannot confirm an amount i did not read');
+    // Their figure is their recollection, and must not come back as evidence.
+    expect(answer.text).not.toContain('$1.40');
+  });
+
+  it('asks which one when two sizes answer to the same name', async () => {
+    const { orderId } = await seed(repo, [
+      { displayName: 'DryNite Jumbo #6 21CT', size: '21 CT' },
+      { displayName: 'DryNite Jumbo #5 24CT', size: '24 CT' },
+    ]);
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'did you record a flyer discount for DryNite Jumbo?',
+    );
+
+    // Answering about either one is a coin flip on two different products.
+    expect(answer.text).toContain('Which one');
+    expect(answer.itemIds).toHaveLength(2);
+  });
+
+  it('answers for the size that was asked about', async () => {
+    const { orderId } = await seed(repo, [
+      {
+        displayName: 'DryNite Jumbo #6 21CT',
+        size: '21 CT',
+        discount: {
+          description: 'Flyer',
+          amount: Money.of('7.00').toStorage(),
+          scope: DiscountScope.WHOLE_CASE,
+          appliesToUnits: null,
+        },
+      },
+      { displayName: 'DryNite Jumbo #5 24CT', size: '24 CT' },
+    ]);
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'did you record a flyer discount for DryNite Jumbo 24CT?',
+    );
+
+    expect(answer.text).toContain('24');
+    expect(answer.text.toLowerCase()).toContain('no discount was recorded');
+  });
+
+  it('says a recorded discount is not in the cost when nobody has said what it comes off', async () => {
+    const { orderId } = await seed(repo, [
+      {
+        displayName: 'Air Fresh Spring 4CT',
+        size: '4 CT',
+        casePrice: Money.of('9.89').toStorage(),
+        unitsPerCase: 4,
+        discount: {
+          description: 'Flyer',
+          amount: Money.of('0.50').toStorage(),
+          scope: DiscountScope.UNKNOWN,
+          appliesToUnits: null,
+        },
+        trueUnitCost: Money.of('2.4725').toStorage(),
+      },
+    ]);
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'was there a discount on the Air Fresh Spring?',
+    );
+
+    expect(answer.text).toContain('$0.50');
+    // Read, but not applied - and the difference has to be said out loud.
+    expect(answer.text.toLowerCase()).toMatch(/not in the cost|not been applied|does not say/);
   });
 });

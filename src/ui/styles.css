@@ -731,3 +731,25 @@ button.notice { display: block; width: 100%; font: inherit; font-size: 0.9375rem
 /* A total that is only part of the purchase. Amber, not red: the figure is real, it is just
    not the whole order. */
 .amount.price.partial { color: var(--warn); }
+
+/* --- a row with its own delete control ---------------------------------- */
+
+/* The row stays the tap target it was; the delete control sits beside it with enough space
+   around it to be hit on purpose and missed by accident. */
+.order-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+}
+
+.row-delete {
+  flex: 0 0 auto;
+  padding: var(--sp-3);
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3, #6b7280);
+}

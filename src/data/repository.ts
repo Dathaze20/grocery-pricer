@@ -5,6 +5,9 @@ import { Category, DiscountScope, guessCategory, makeDiscount, APPROVED_PRICE_BE
 import { CostCalculator } from '../core/cost';
 import { PricingEngine, defaultPricingRules, type PricingRules } from '../core/pricing';
 import { openGroceryDb, type GroceryDb } from './db';
+
+/** How a discount the owner typed in is described, so a card can say where it came from. */
+export const ENTERED_BY_HAND = 'Entered from the receipt';
 import {
   DB_NAME,
   MessageRole,
@@ -306,7 +309,7 @@ export class Repository {
    */
   async reviseItem(
     itemId: number,
-    change: { scope?: DiscountScope; unitsPerCase?: number },
+    change: { scope?: DiscountScope; unitsPerCase?: number; discountAmount?: Money | null },
     rules: PricingRules = defaultPricingRules(),
   ): Promise<StoredItem | null> {
     const item = await this.item(itemId);
@@ -315,15 +318,34 @@ export class Repository {
     const unitsPerCase = change.unitsPerCase ?? item.unitsPerCase;
     const casePrice = item.casePrice === null ? null : Money.fromStorage(item.casePrice);
 
-    const discount =
-      item.discount === null
-        ? null
-        : makeDiscount(
-            item.discount.description,
-            Money.fromStorage(item.discount.amount),
-            change.scope ?? item.discount.scope,
-            item.discount.appliesToUnits ?? null,
-          );
+    /*
+     * A discount the owner read off the paper themselves.
+     *
+     * The receipt prints the amount four lines below its product, and a reading that misses it
+     * leaves a cost that is simply too high with nothing on the card to say so. Typing in the
+     * printed figure has to be enough - and it goes through this same method, so the cost each,
+     * the order total and the suggestion are all redone by the one piece of arithmetic, and the
+     * approved price and the price history are left exactly as they are.
+     *
+     * A negative figure is refused rather than stored: scope decides which way money moves.
+     */
+    let discount = buildDiscount(item, change.scope);
+    if (change.discountAmount !== undefined) {
+      const entered = change.discountAmount;
+      if (entered === null) {
+        discount = null;
+      } else {
+        if (entered.isNegative) {
+          throw new RangeError('A discount cannot be negative');
+        }
+        discount = makeDiscount(
+          item.discount?.description ?? ENTERED_BY_HAND,
+          entered,
+          change.scope ?? item.discount?.scope ?? DiscountScope.WHOLE_CASE,
+          null,
+        );
+      }
+    }
 
     let trueUnitCost: number | null = null;
     let totalWholesaleCost: number | null = null;
@@ -352,6 +374,9 @@ export class Repository {
     const settled = item.issues.filter(
       (issue) =>
         !(change.scope !== undefined && issue === 'UNKNOWN_DISCOUNT_SCOPE') &&
+        // An amount typed in from the paper settles both questions a missing discount raised.
+        !(change.discountAmount !== undefined && issue === 'UNKNOWN_DISCOUNT_SCOPE') &&
+        !(change.discountAmount !== undefined && issue === 'MISSING_DISCOUNT') &&
         !(change.unitsPerCase !== undefined && issue === 'MISSING_UNITS_PER_CASE') &&
         // Decided again below against the corrected cost, so the stale verdict goes first.
         issue !== APPROVED_PRICE_BELOW_COST,
@@ -751,4 +776,16 @@ function conflicts(
 function differs(a: string | null, b: string | null): boolean {
   if (a === null || b === null) return false;
   return a.trim().toUpperCase() !== b.trim().toUpperCase();
+}
+
+
+/** The row's existing discount, with only its scope possibly changed. */
+function buildDiscount(item: StoredItem, scope?: DiscountScope) {
+  if (item.discount === null) return null;
+  return makeDiscount(
+    item.discount.description,
+    Money.fromStorage(item.discount.amount),
+    scope ?? item.discount.scope,
+    item.discount.appliesToUnits ?? null,
+  );
 }

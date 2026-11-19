@@ -11,7 +11,7 @@ import type { StoredItem } from '../../data/schema';
 import type { Screen } from '../App';
 import { TopBar } from '../components/TopBar';
 import { useUpdateHold } from '../useUpdateHold';
-import { holdsUnsavedWork, readPriceEdit } from '../priceEdit';
+import { holdsUnsavedWork, readDiscountEdit, readPriceEdit } from '../priceEdit';
 import { Toast } from '../components/Toast';
 import { CheckIcon } from '../components/icons';
 
@@ -111,6 +111,10 @@ function ItemRow(props: {
 
   const unitsPerCase = item.unitsPerCase ?? null;
   const [unitsText, setUnitsText] = useState('');
+  const [discountText, setDiscountText] = useState('');
+
+  const casePrice = item.casePrice === null ? null : Money.fromStorage(item.casePrice);
+  const discountEdit = readDiscountEdit(discountText, casePrice);
 
   // Two things the receipt did not say, each of which leaves the cost wrong in its own way.
   const needsScope =
@@ -164,7 +168,7 @@ function ItemRow(props: {
 
   // Unsaved work, of any kind: a changed price, a half-typed one, an emptied box, or an exact
   // profit target being typed. An automatic update reloads the page and would take all of it.
-  useUpdateHold(holdsUnsavedWork(edit, targetText), 'blocking');
+  useUpdateHold(holdsUnsavedWork(edit, targetText, discountText), 'blocking');
 
   const setPrice = useCallback((price: Money) => {
     const safe = price.isNegative ? Money.ZERO : price.roundedToCents();
@@ -194,7 +198,7 @@ function ItemRow(props: {
 
   /** The owner's answer, applied to this one row. Their approved price is never touched. */
   const revise = useCallback(
-    async (change: { scope?: DiscountScope; unitsPerCase?: number }) => {
+    async (change: { scope?: DiscountScope; unitsPerCase?: number; discountAmount?: Money | null }) => {
       await repo.reviseItem(item.id, change);
       await props.onSaved(`Updated ${item.displayName}`);
     },
@@ -412,6 +416,72 @@ function ItemRow(props: {
                   Use it
                 </button>
               </div>
+            </div>
+          )}
+
+          {casePrice !== null && (
+            /*
+             * The discount the reading missed.
+             *
+             * A wholesale receipt prints the amount off four lines below its product, and a
+             * reading that loses it leaves a cost that is simply too high - with nothing on the
+             * card to say so, because an absent discount looks exactly like no discount. The
+             * owner has the paper in their hand, so the smallest honest fix is to let them type
+             * what it says. Confirming is one press, and that press is what makes it whole-case:
+             * nothing here assumes a scope the owner has not chosen.
+             */
+            <div className="notice">
+              <p style={{ marginTop: 0 }}>
+                {item.discount === null
+                  ? 'If the receipt shows money off this case and it is not here, type the printed amount.'
+                  : `Recorded: ${Money.fromStorage(item.discount.amount).format()} off. Type a new amount to correct it.`}
+              </p>
+              <div className="row">
+                <input
+                  id={`discount-${item.id}`}
+                  type="text"
+                  inputMode="decimal"
+                  className="grow"
+                  placeholder="e.g. 7.00"
+                  aria-label={`Printed discount for ${item.displayName}`}
+                  value={discountText}
+                  onChange={(event) => setDiscountText(event.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={discountEdit.value === null}
+                  onClick={() => {
+                    const amount = discountEdit.value;
+                    if (amount === null) return;
+                    setDiscountText('');
+                    void revise({ discountAmount: amount, scope: DiscountScope.WHOLE_CASE });
+                  }}
+                >
+                  Off the whole case
+                </button>
+              </div>
+              {discountEdit.message !== null && (
+                <p className="t-cap" role="status">
+                  {discountEdit.message}
+                </p>
+              )}
+              {discountEdit.value !== null && unitsPerCase !== null && unitsPerCase > 0 && (
+                <p className="t-cap">
+                  {casePrice.format()} less {discountEdit.value.format()} is{' '}
+                  {casePrice.minus(discountEdit.value).format()} the case,{' '}
+                  {casePrice.minus(discountEdit.value).divideBy(unitsPerCase).format()} each.
+                </p>
+              )}
+              {item.discount !== null && (
+                <button
+                  type="button"
+                  className="btn btn-quiet btn-block"
+                  onClick={() => void revise({ discountAmount: null })}
+                >
+                  There is no discount on this product
+                </button>
+              )}
             </div>
           )}
 

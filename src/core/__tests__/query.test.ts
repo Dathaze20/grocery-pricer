@@ -135,3 +135,53 @@ describe('OrderQueryEngine', () => {
     expect(engine.inCategory(null)).toHaveLength(0);
   });
 });
+
+describe('a word the receipt never printed', () => {
+  /**
+   * The failure this exists for.
+   *
+   * Asked "did you record a flyer discount for the jumbo diapers 21CT", the app answered "I
+   * could not find that in this order" about a product that was in the order: the receipt
+   * prints no word like "diapers" anywhere, and every word had to land. A named pack size has
+   * already narrowed the order to the rows that fit it, so one extra descriptive word should
+   * not then sink the match as well.
+   */
+  const shelf = new OrderQueryEngine([
+    item({ id: 20, name: 'DryNite Jumbo #6 21CT', size: '21 ct', brand: 'DryNite' }),
+    item({ id: 21, name: 'DryNite Jumbo #5 24CT', size: '24 ct', brand: 'DryNite' }),
+    item({ id: 22, name: 'Kettle Crisps Sea Salt', size: '21 ct', brand: 'Kettle' }),
+  ]);
+
+  it('still finds the product when one extra word is not on the receipt', () => {
+    const outcome = shelf.resolve({ phrase: 'drynite jumbo diapers 21ct' });
+
+    expect(outcome.kind).toBe('exact');
+    expect(outcome.kind === 'exact' ? outcome.item.id : null).toBe(20);
+  });
+
+  it('does not let a size alone carry a different product', () => {
+    // "crisps" and "salt" land on the crisps, "drynite" and "jumbo" land on neither. A
+    // different product at the same pack size must not answer for this one.
+    const outcome = shelf.resolve({ phrase: 'drynite jumbo nappies 21ct' });
+
+    expect(outcome.kind === 'exact' ? outcome.item.id : null).toBe(20);
+    expect(shelf.resolve({ phrase: 'pedigree chunks gravy 21ct' }).kind).toBe('none');
+  });
+
+  it('needs two words to land, not one plus a size', () => {
+    // One real word and a size is not enough to tell two products apart.
+    expect(shelf.resolve({ phrase: 'jumbo nappies 21ct' }).kind).toBe('none');
+  });
+
+  it('prefers the row that matches cleanly', () => {
+    const outcome = shelf.resolve({ phrase: 'kettle crisps sea salt 21ct' });
+
+    expect(outcome.kind === 'exact' ? outcome.item.id : null).toBe(22);
+  });
+
+  it('is still strict when no size was named', () => {
+    // Without a size there is nothing narrowing the order, so every word must land. This is
+    // the guard that keeps "corn oil" off "vegetable oil".
+    expect(engine.resolve({ phrase: 'red white corn oil barrel' }).kind).toBe('none');
+  });
+});

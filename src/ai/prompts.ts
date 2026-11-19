@@ -51,24 +51,52 @@ Return this JSON shape:
       "confidence": number             // 0.0 - 1.0, how sure you are of this row
     }
   ],
+  "discountLines": [
+    {
+      "amount": string|null,           // the money off, as printed, without the minus sign
+      "productName": string|null,      // the product this line names, if it names one
+      "appliesToIndex": number|null,   // position in "items" above, counting from 0, if you can tell
+      "reference": string|null,        // the flyer or promotion number printed with it
+      "sourcePhotoIds": [number],
+      "sourceText": [string]           // every line you read this from
+    }
+  ],
   "warnings": [string]
 }
 
-DISCOUNTS ARE USUALLY PRINTED ON THEIR OWN LINE, NOT ON THE PRODUCT LINE.
-A wholesale receipt prints the product and its case price on one line, and any money off on a
-separate line underneath - for example:
+MONEY OFF IS NOT PRINTED BESIDE ITS PRODUCT.
+A wholesale receipt spreads one purchase over several lines, in this order:
 
-  PAMPERS JUMBO #6 21CT      45.99
-  Flyer 12 - PAMPERS JUMBO   -7.00
+  DRYNITE JUMBO #6 21CT
+  0000000000000
+  45.99   4
+  FLYER DISCOUNT
+  F12
+  -7.00
+  UNITS 1
 
-Those two lines are ONE product. Put the 7.00 in that product's "discount.amount", and put BOTH
-lines in its "sourceText". A discount line belongs to the product line it names, or to the
-product line directly above it when it names none. Never emit a discount line as a product of
-its own, and never drop it.
+The amount off is four lines below the product, with a reference number in between. The next
+product then starts immediately underneath, so an amount read as belonging to the wrong
+neighbour is money taken off the wrong product.
 
-"scope" must be one of WHOLE_CASE, PER_UNIT, UNITS_SUBSET, CUSTOM, UNKNOWN.
-Use UNKNOWN whenever the receipt does not make it clear what a discount applies to.
-UNKNOWN is the safe answer; the shopkeeper will be asked. A wrong guess changes what they charge.
+List EVERY line of money off in "discountLines" - every negative amount, every line saying
+flyer, discount, deal, allowance or promotion. Do this even when you are not sure which product
+it belongs to, and do it even when you have already filled in that product's "discount". A line
+listed twice costs nothing; a line left out cannot be recovered. Put the amount in as a positive
+number and the minus sign stays off it.
+
+"appliesToIndex" is the position of the product in the "items" array you are returning, counting
+from 0 - not a line number on the paper. Give it only when the layout makes it plain, which is
+usually the nearest product line above. Leave it null when you are unsure, and leave
+"productName" null when the line names no product. Null is not a failure here: an unplaced line
+is reported to the shopkeeper, while a line placed on the wrong product changes what they charge.
+
+You may also fill a product's own "discount" when it is unmistakable. Scope must be one of
+WHOLE_CASE, PER_UNIT, UNITS_SUBSET, CUSTOM, UNKNOWN. Use UNKNOWN whenever the receipt does not
+make clear what a discount applies to - the shopkeeper will be asked, and a wrong guess changes
+what they charge.
+
+Never emit a discount line as a product of its own. Never invent an amount that is not printed.
 
 One JSON object for every product line on the receipt. If the same line appears in two photos,
 report it once with both photo ids.
