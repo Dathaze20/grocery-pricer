@@ -41,24 +41,27 @@ export function associateDiscountLines(
   const warnings: string[] = [];
 
   // A product that already carries a discount is not a candidate, and its amount is left alone.
+  // Read loosely, sign and all: whatever the model attached, that product is spoken for.
   for (let i = 0; i < out.length; i += 1) {
-    if (readableAmount(out[i]!.discount?.amount) !== null) taken.add(i);
+    if (carriesDiscount(out[i]!)) taken.add(i);
   }
 
   for (const line of lines) {
-    const amount = readableAmount(line.amount);
+    const amount = discountAmount(line);
     if (amount === null) {
       // No figure, no discount. Inventing one here is the one thing this must never do.
       if (describes(line)) warnings.push(unreadableWarning(line));
       continue;
     }
 
-    const target = placeLine(line, out, taken);
-    if (target === null) {
-      warnings.push(unplacedWarning(line, amount));
+    const placement = placeLine(line, out, taken);
+    if (placement.kind !== 'at') {
+      const warning = refusalWarning(placement.kind, line, amount);
+      if (warning !== null) warnings.push(warning);
       continue;
     }
 
+    const target = placement.at;
     taken.add(target);
     const item = out[target]!;
     const evidence = [...item.sourceText, ...line.sourceText];
@@ -81,26 +84,97 @@ export function associateDiscountLines(
 }
 
 /**
- * Which product a line belongs to, or null when the paper does not say.
+ * Where a line goes, or why it does not go anywhere.
  *
- * The model's own index is trusted first, because the layout is what it could actually see. A
- * name is trusted second, and only when one product answers to it. Everything else is refused.
+ * Each refusal is its own answer because each has a different thing to tell the owner, and
+ * because a refusal that cannot explain itself is indistinguishable from a line nobody noticed.
+ */
+type Placement =
+  | { readonly kind: 'at'; readonly at: number }
+  /** The line names one product and points at another. */
+  | { readonly kind: 'conflict' }
+  /** A name several products answer to, and nothing printed to tell them apart. */
+  | { readonly kind: 'unverified' }
+  /** The product it points at already has this discount. */
+  | { readonly kind: 'duplicate' }
+  /** Nothing to go on at all. */
+  | { readonly kind: 'unplaceable' };
+
+/**
+ * Which product a line belongs to, or why the paper does not say.
+ *
+ * The model's index is its reading of the layout, and the layout is real evidence: the amount is
+ * printed below its product and above the next one. But it is only ever one piece of evidence,
+ * and it is never taken over the top of another. When the line also names a product, the name
+ * has to agree with the index, or nothing is applied - a model that writes "size 5" and points
+ * at size 6 has told us two different things, and picking the one we happen to read first takes
+ * money off the wrong product while looking entirely settled.
+ *
+ * And an index is not a tie-breaker. "FLYER DISCOUNT - DRYNITE JUMBO" over a receipt holding
+ * two sizes of it names both equally; an index pointing at one of them adds no printed evidence
+ * about which, so unless something on the paper tells the two apart, the line goes unplaced.
  */
 function placeLine(
   line: AiDiscountLine,
   items: readonly AiExtractedItem[],
   taken: ReadonlySet<number>,
-): number | null {
+): Placement {
+  const named = nameOf(line);
+  const tied = named === null ? [] : topMatches(named, items, taken);
+
   const index = line.appliesToIndex;
-  if (index !== null && index !== undefined && Number.isInteger(index)) {
-    if (index >= 0 && index < items.length && !taken.has(index)) return index;
+  const pointed =
+    index !== null && index !== undefined && Number.isInteger(index) && index >= 0 && index < items.length
+      ? index
+      : null;
+
+  /*
+   * The same discount listed twice.
+   *
+   * The prompt asks for every money-off line even when it has already been nested into a
+   * product, so the same deduction can arrive twice. Falling back to matching by name sent the
+   * second copy to the *next* purchase of the same product - a second case that had no discount
+   * printed against it quietly got one. A line that points at a product already holding its
+   * discount is that same money, so it stops here.
+   */
+  if (pointed !== null && taken.has(pointed)) return { kind: 'duplicate' };
+
+  if (pointed !== null) {
+    // Nothing is named, so the layout is all there is - and it is what the model could see.
+    if (named === null) return { kind: 'at', at: pointed };
+    // The name matches no row at all, so it contradicts nothing either.
+    if (tied.length === 0) return { kind: 'at', at: pointed };
+
+    if (!tied.some((candidate) => candidate.at === pointed)) return { kind: 'conflict' };
+    // The name agrees, and with this row alone.
+    if (tied.length === 1) return { kind: 'at', at: pointed };
+    // Two cases of one product: either row takes it and the answer is the same.
+    if (allAlike(tied, items)) return { kind: 'at', at: pointed };
+    // Several different products answer to the name. Only the paper may break that tie.
+    return distinguishes(line, pointed, tied, items)
+      ? { kind: 'at', at: pointed }
+      : { kind: 'unverified' };
   }
 
+  if (named === null || tied.length === 0) return { kind: 'unplaceable' };
+  if (tied.length === 1) return { kind: 'at', at: tied[0]!.at };
+  if (allAlike(tied, items)) return { kind: 'at', at: tied[0]!.at };
+  return { kind: 'unverified' };
+}
+
+/** The name the line gives, or null when it gives nothing usable. */
+function nameOf(line: AiDiscountLine): string | null {
   const named = line.productName;
-  if (named === null || named === undefined || NameNormalizer.tokens(named).length === 0) {
-    return null;
-  }
+  if (named === null || named === undefined) return null;
+  return NameNormalizer.tokens(named).length === 0 ? null : named;
+}
 
+/** The best-matching untaken rows, and anything tied with them. */
+function topMatches(
+  named: string,
+  items: readonly AiExtractedItem[],
+  taken: ReadonlySet<number>,
+): Array<{ at: number; score: number }> {
   const scored: Array<{ at: number; score: number }> = [];
   for (let at = 0; at < items.length; at += 1) {
     if (taken.has(at)) continue;
@@ -111,25 +185,60 @@ function placeLine(
     );
     if (score >= DISCOUNT_NAME_MATCH) scored.push({ at, score });
   }
-  if (scored.length === 0) return null;
+  if (scored.length === 0) return [];
 
   scored.sort((a, b) => b.score - a.score);
   const best = scored[0]!;
-  const tied = scored.filter((s) => s.score >= best.score - TIE_MARGIN);
-  if (tied.length === 1) return best.at;
+  return scored.filter((candidate) => candidate.score >= best.score - TIE_MARGIN);
+}
 
-  /*
-   * A tie is only safe when the tied rows are the same purchase twice.
-   *
-   * "FLYER DISCOUNT - PAMPERS JUMBO" names both the size 6 and the size 5 on the same receipt
-   * equally well, and they are different products at different costs: guessing picks one at
-   * random and is wrong half the time. Two cases of one product bought twice are a different
-   * matter - either row takes the line and the answer is the same - so those are placed in the
-   * order they were printed.
-   */
+/** Whether every tied row is the same purchase as the first: nothing printed tells them apart. */
+function allAlike(
+  tied: ReadonlyArray<{ at: number }>,
+  items: readonly AiExtractedItem[],
+): boolean {
   const first = items[tied[0]!.at]!;
-  const allAlike = tied.every((s) => indistinguishable(first, items[s.at]!));
-  return allAlike ? tied[0]!.at : null;
+  return tied.every((candidate) => indistinguishable(first, items[candidate.at]!));
+}
+
+/**
+ * Whether the line's own printed text names something only the pointed-at row has.
+ *
+ * This is what turns a tie into evidence. A flyer line reading "DRYNITE JUMBO #5 24CT" carries
+ * "24CT", which belongs to one of the two sizes and not the other; a line reading only "DRYNITE
+ * JUMBO" carries nothing that does. Amounts are stripped out first, or the digits in "-24.00"
+ * would line themselves up against a 24-count pack and look like proof.
+ */
+function distinguishes(
+  line: AiDiscountLine,
+  pointed: number,
+  tied: ReadonlyArray<{ at: number }>,
+  items: readonly AiExtractedItem[],
+): boolean {
+  const printed = new Set(identityTokens([line.productName ?? '', ...line.sourceText].join(' ')));
+  if (printed.size === 0) return false;
+
+  const mine = identityTokens(identityOf(items[pointed]!));
+  const others = tied
+    .filter((candidate) => candidate.at !== pointed)
+    .map((candidate) => new Set(identityTokens(identityOf(items[candidate.at]!))));
+
+  return mine.some(
+    (token) => printed.has(token) && others.every((other) => !other.has(token)),
+  );
+}
+
+function identityOf(item: AiExtractedItem): string {
+  return [item.rawName ?? '', item.canonicalName ?? '', item.size ?? ''].join(' ');
+}
+
+/** Words and numbers that identify a product, with money taken out of the way. */
+function identityTokens(text: string): string[] {
+  return text
+    .replace(/-?\$?\d+[.,]\d{2}\b/g, ' ')
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter((token) => token.length > 0);
 }
 
 /** Two rows nothing printed can tell apart: same name, same size, same case price. */
@@ -152,7 +261,7 @@ function priceKey(item: AiExtractedItem): string {
   return parsed?.toPlainString() ?? '?';
 }
 
-/** A positive, readable figure, or null. A negative or unparseable one is not a discount. */
+/** A positive, readable figure, or null. Used for prices, where a minus sign is a misread. */
 function readableAmount(raw: string | null | undefined): Money | null {
   if (raw === null || raw === undefined || raw.trim().length === 0) return null;
   const parsed = Money.parseOrNull(raw);
@@ -160,11 +269,70 @@ function readableAmount(raw: string | null | undefined): Money | null {
   return parsed;
 }
 
+/** Words that say a line is money off, so a printed minus is its sign rather than a misread. */
+const SAYS_MONEY_OFF =
+  /\b(flyer|discount|discounts|deal|deals|allowance|promo|promotion|promotional|saving|savings|rebate|coupon|off)\b/i;
+
+/**
+ * How much a discount line takes off, read the way the receipt prints it.
+ *
+ * The paper prints money off as "-7.00", and the prompt asks for it without the sign - but the
+ * model reads what is in front of it and sometimes copies the minus. Throwing that away loses a
+ * discount that was printed perfectly plainly. So a negative figure on a line that says, in its
+ * own words, that it is money off is taken as its magnitude; the line's text is kept exactly as
+ * it arrived, so the evidence on the product card still shows the minus the receipt printed.
+ *
+ * A negative figure on a line that says nothing of the kind is still refused: it could as
+ * easily be a credit, a correction or a misread, and none of those should lower a cost.
+ */
+function discountAmount(line: AiDiscountLine): Money | null {
+  const raw = line.amount;
+  if (raw === null || raw === undefined || raw.trim().length === 0) return null;
+  const parsed = Money.parseOrNull(raw);
+  if (parsed === null || parsed.isZero) return null;
+  if (!parsed.isNegative) return parsed;
+  return saysMoneyOff(line) ? parsed.abs() : null;
+}
+
+function saysMoneyOff(line: AiDiscountLine): boolean {
+  return SAYS_MONEY_OFF.test(
+    [line.productName ?? '', line.reference ?? '', ...line.sourceText].join(' '),
+  );
+}
+
+/** Whether the model already attached a discount to this row, whatever sign it wrote it with. */
+function carriesDiscount(item: AiExtractedItem): boolean {
+  const raw = item.discount?.amount;
+  if (raw === null || raw === undefined || raw.trim().length === 0) return false;
+  const parsed = Money.parseOrNull(raw);
+  return parsed !== null && !parsed.isZero;
+}
+
 function describes(line: AiDiscountLine): boolean {
   return (
     (line.productName ?? '').trim().length > 0 ||
     line.sourceText.some((text) => text.trim().length > 0)
   );
+}
+
+/** What to tell the owner about a line that was not applied. Null when there is nothing to say. */
+function refusalWarning(
+  kind: 'conflict' | 'unverified' | 'duplicate' | 'unplaceable',
+  line: AiDiscountLine,
+  amount: Money,
+): string | null {
+  const named = (line.productName ?? '').trim();
+  const which = named.length > 0 ? ` for ${named}` : '';
+
+  switch (kind) {
+    case 'duplicate':
+      // The same money, listed twice. Said once, quietly, so nobody goes looking for it.
+      return `The ${amount.format()} discount${which} was listed twice on the receipt and has been counted once.`;
+    case 'conflict':
+      return `A discount of ${amount.format()}${which} was printed, but the line names one product and points at another, so I could not tell which it belongs to. Nothing was taken off - open the product and enter it if you can see which one it is.`;
+    default:
+      return unplacedWarning(line, amount);
+  }
 }
 
 function unplacedWarning(line: AiDiscountLine, amount: Money): string {
