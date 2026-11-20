@@ -5,23 +5,42 @@ import { parseChatIntent } from '../chat';
 describe('the receipt reader is told that discounts have their own line', () => {
   const prompt = orderExtractionPrompt([1, 2]);
 
-  it('says a discount line belongs to the product it follows', () => {
-    // The root cause of the missing Pampers and Cesar discounts: the prompt described
-    // "discount" as a field of a product line and never said that the money off is printed
-    // underneath, on a line of its own, which the model therefore skipped.
-    expect(prompt).toMatch(/own line/i);
-    expect(prompt).toMatch(/belongs to the product line/i);
-    expect(prompt).toMatch(/never drop it/i);
+  it('asks for every money-off line as a list of its own', () => {
+    /*
+     * Why this is a list and not a field.
+     *
+     * Telling the model where the money off is printed was not enough: eighty-one products came
+     * back from a real seven-photograph order with not one discount among them. Carrying an
+     * amount backwards over four lines and nesting it in the right object is bookkeeping.
+     * Listing the lines it can see is reading, which is the thing it is good at - and whose
+     * line it is then gets decided by code that can refuse.
+     */
+    expect(prompt).toContain('"discountLines"');
+    expect(prompt).toMatch(/list every line of money off/i);
+    expect(prompt).toMatch(/even when you are not sure which product/i);
   });
 
-  it('shows the two-line shape with the real figures', () => {
-    expect(prompt).toContain('PAMPERS JUMBO #6 21CT');
-    expect(prompt).toContain('45.99');
-    expect(prompt).toContain('7.00');
+  it('shows the shape the receipt actually prints, reference line and all', () => {
+    // Four lines between the product and its amount, with a reference number in between.
+    expect(prompt).toContain('FLYER DISCOUNT');
+    expect(prompt).toContain('-7.00');
+    expect(prompt).toContain('UNITS 1');
+    expect(prompt).toMatch(/four lines below the product/i);
+  });
+
+  it('says an index is a position in the answer, not a line on the paper', () => {
+    // An index read as a line number silently takes money off the wrong product.
+    expect(prompt).toMatch(/position of the product in the "items" array/i);
+    expect(prompt).toMatch(/counting\s*\n?from 0 - not a line number/i);
+  });
+
+  it('prefers an unplaced line to a guessed one', () => {
+    expect(prompt).toMatch(/Null is not a failure here/i);
+    expect(prompt).toMatch(/never invent an amount/i);
   });
 
   it('still tells it to guess no scope', () => {
-    expect(prompt).toMatch(/UNKNOWN is the safe answer/);
+    expect(prompt).toMatch(/UNKNOWN whenever the receipt does not/i);
   });
 });
 

@@ -375,3 +375,134 @@ describe('an abbreviation must not merge two different packs', () => {
     expect(again.id).toBe(created.id);
   });
 });
+
+describe('deleting one order', () => {
+  let repo: Repository;
+
+  beforeEach(async () => {
+    repo = await freshRepo();
+  });
+
+  /** An order with a photograph, a product row and a message - the whole shape of a real one. */
+  async function orderWithContents(name: string): Promise<number> {
+    const order = await repo.createOrder();
+    await repo.addPhoto({
+      orderId: order.id,
+      bytes: new Uint8Array([1, 2, 3]).buffer,
+      mimeType: 'image/jpeg',
+      type: OrderImageType.RECEIPT,
+      isDeliveryPhoto: false,
+      createdAt: Date.now(),
+    });
+    const product = await repo.findOrCreateProduct({
+      displayName: name,
+      receiptName: name,
+      size: '12 CT',
+      upc: null,
+      category: Category.OTHER,
+    });
+    await repo.addItems([
+      {
+        orderId: order.id,
+        productId: product.id,
+        rawName: name,
+        displayName: name,
+        size: '12 CT',
+        upc: null,
+        supplierSku: null,
+        category: Category.OTHER,
+        casePrice: Money.of('24.00').toStorage(),
+        unitsPerCase: 12,
+        casesPurchased: 1,
+        looseUnits: 0,
+        discount: null,
+        trueUnitCost: Money.of('2.00').toStorage(),
+        totalWholesaleCost: Money.of('24.00').toStorage(),
+        suggestedPrice: Money.of('3.99').toStorage(),
+        pricingSource: null,
+        pricingRationale: null,
+        approvedPrice: Money.of('3.79').toStorage(),
+        previousPrice: null,
+        confidence: ItemConfidence.HIGH,
+        aiConfidence: 0.9,
+        issues: [],
+        sourcePhotoIds: [],
+        sourceText: [],
+      },
+    ]);
+    await repo.recordPrice(product.id, order.id, Money.of('2.00').toStorage(), Money.of('3.79').toStorage());
+    return order.id;
+  }
+
+  it('removes the one that was chosen and nothing else', async () => {
+    const keep = await orderWithContents('KEEP ME');
+    const remove = await orderWithContents('REMOVE ME');
+
+    await repo.deleteOrder(remove);
+
+    expect(await repo.order(remove)).toBeNull();
+    expect(await repo.order(keep)).not.toBeNull();
+    expect(await repo.itemsFor(keep)).toHaveLength(1);
+    expect(await repo.photosFor(keep)).toHaveLength(1);
+  });
+
+  it('takes that order\'s photographs and rows with it, and no others', async () => {
+    const keep = await orderWithContents('KEEP ME');
+    const remove = await orderWithContents('REMOVE ME');
+
+    await repo.deleteOrder(remove);
+
+    expect(await repo.itemsFor(remove)).toHaveLength(0);
+    expect(await repo.photosFor(remove)).toHaveLength(0);
+    expect(await repo.photosFor(keep)).toHaveLength(1);
+  });
+
+  it('leaves what the shop knows about its products alone', async () => {
+    const remove = await orderWithContents('REMOVE ME');
+    const productId = (await repo.itemsFor(remove))[0]!.productId;
+    expect(productId).not.toBeNull();
+    const historyBefore = await repo.historyFor(productId!);
+
+    await repo.deleteOrder(remove);
+
+    // The product and what it last cost are the shop's memory, not the order's. A receipt
+    // thrown away does not unlearn the product that was on it.
+    expect(await repo.product(productId!)).not.toBeNull();
+    expect(await repo.historyFor(productId!)).toEqual(historyBefore);
+  });
+
+  it('leaves the settings and the saved key untouched', async () => {
+    const remove = await orderWithContents('REMOVE ME');
+    await repo.putSetting('geminiApiKey', 'not-a-real-key');
+
+    await repo.deleteOrder(remove);
+
+    expect(await repo.setting('geminiApiKey')).toBe('not-a-real-key');
+  });
+
+  it('drops out of the recent list at once', async () => {
+    const keep = await orderWithContents('KEEP ME');
+    const remove = await orderWithContents('REMOVE ME');
+    expect((await repo.recentOrders(10)).map((o) => o.id)).toContain(remove);
+
+    await repo.deleteOrder(remove);
+
+    const listed = (await repo.recentOrders(10)).map((o) => o.id);
+    expect(listed).not.toContain(remove);
+    expect(listed).toContain(keep);
+  });
+
+  it('deleting one of three leaves the other two whole', async () => {
+    const first = await orderWithContents('FIRST');
+    const second = await orderWithContents('SECOND');
+    const third = await orderWithContents('THIRD');
+
+    await repo.deleteOrder(second);
+
+    expect(await repo.order(first)).not.toBeNull();
+    expect(await repo.order(third)).not.toBeNull();
+    expect(await repo.itemsFor(first)).toHaveLength(1);
+    expect(await repo.itemsFor(third)).toHaveLength(1);
+    expect(await repo.order(second)).toBeNull();
+  });
+});

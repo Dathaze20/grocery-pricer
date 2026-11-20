@@ -1,3 +1,4 @@
+import { attachDiscountLines } from '../core/discount-lines';
 import { aiErrorMessage, isFatalForRun, isTransient, OrderImageType, type AiError, type AiOrderExtraction } from '../core/ai-types';
 import { mergeExtractions, validateExtraction, ExtractionIssue, type ValidatedItem } from '../core/ai-validate';
 import { CostCalculator } from '../core/cost';
@@ -233,7 +234,7 @@ export async function processOrder(
           ),
         );
         if (one.ok) {
-          recovered.push(one.value);
+          recovered.push(attachDiscountLines(one.value));
           continue;
         }
 
@@ -319,7 +320,7 @@ export async function processOrder(
       });
       continue;
     }
-    batches.push(result.value);
+    batches.push(attachDiscountLines(result.value));
   }
 
   const merged = mergeExtractions(batches);

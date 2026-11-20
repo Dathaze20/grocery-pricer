@@ -540,3 +540,236 @@ describe('whether an approved price still covers the cost, asked again', () => {
     expect(revised!.issues).not.toContain('UNKNOWN_DISCOUNT_SCOPE');
   });
 });
+
+describe('a discount the owner typed in from the paper', () => {
+  let repo: Repository;
+  beforeEach(async () => {
+    repo = await freshRepo();
+  });
+
+  it('takes it off the whole case and recomputes the cost each', async () => {
+    const row = await rowAsRead(repo, {
+      name: 'DryNite Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      // The reading missed it entirely, which is the case this exists for.
+      discount: null,
+    });
+    expect(row.discount).toBeNull();
+
+    const revised = await repo.reviseItem(row.id, {
+      discountAmount: Money.of('7.00'),
+      scope: DiscountScope.WHOLE_CASE,
+    });
+
+    expect(revised!.discount?.scope).toBe(DiscountScope.WHOLE_CASE);
+    expect(Money.fromStorage(revised!.discount!.amount).format()).toBe('$7.00');
+    expect(Money.fromStorage(revised!.trueUnitCost!).roundedToCents().format()).toBe('$9.75');
+    expect(Money.fromStorage(revised!.totalWholesaleCost!).format()).toBe('$38.99');
+  });
+
+  it('moves the order total with it', async () => {
+    const row = await rowAsRead(repo, {
+      name: 'DryNite Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: null,
+    });
+
+    await repo.reviseItem(row.id, {
+      discountAmount: Money.of('7.00'),
+      scope: DiscountScope.WHOLE_CASE,
+    });
+
+    const order = await repo.order(row.orderId);
+    expect(Money.fromStorage(order!.totalWholesaleCost).format()).toBe('$38.99');
+  });
+
+  it('leaves the price the owner approved exactly where it was', async () => {
+    const row = await rowAsRead(repo, {
+      name: 'DryNite Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: null,
+    });
+    await repo.approvePrice(row.id, Money.of('13.99'));
+
+    const revised = await repo.reviseItem(row.id, {
+      discountAmount: Money.of('7.00'),
+      scope: DiscountScope.WHOLE_CASE,
+    });
+
+    // Their price is theirs. Only the cost and the suggestion move.
+    expect(Money.fromStorage(revised!.approvedPrice!).format()).toBe('$13.99');
+    expect(revised!.suggestedPrice).not.toBeNull();
+  });
+
+  it('redoes the suggested price against the corrected cost', async () => {
+    const row = await rowAsRead(repo, {
+      name: 'DryNite Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: null,
+    });
+    const before = await repo.reviseItem(row.id, { unitsPerCase: 4 });
+
+    const after = await repo.reviseItem(row.id, {
+      discountAmount: Money.of('7.00'),
+      scope: DiscountScope.WHOLE_CASE,
+    });
+
+    expect(after!.suggestedPrice!).toBeLessThan(before!.suggestedPrice!);
+  });
+
+  it('refuses a negative amount rather than storing one', async () => {
+    const row = await rowAsRead(repo, {
+      name: 'DryNite Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: null,
+    });
+
+    await expect(
+      repo.reviseItem(row.id, { discountAmount: Money.of('-7.00') }),
+    ).rejects.toThrow(RangeError);
+
+    const untouched = await repo.item(row.id);
+    expect(untouched!.discount).toBeNull();
+  });
+
+  it('corrects an amount that was read wrongly', async () => {
+    const row = await rowAsRead(repo, {
+      name: 'DryNite Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: '0.70',
+    });
+
+    const revised = await repo.reviseItem(row.id, {
+      discountAmount: Money.of('7.00'),
+      scope: DiscountScope.WHOLE_CASE,
+    });
+
+    expect(Money.fromStorage(revised!.discount!.amount).format()).toBe('$7.00');
+    expect(Money.fromStorage(revised!.trueUnitCost!).roundedToCents().format()).toBe('$9.75');
+  });
+
+  it('takes a discount back off when there was none after all', async () => {
+    const row = await rowAsRead(repo, {
+      name: 'DryNite Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: '7.00',
+    });
+    await repo.reviseItem(row.id, { scope: DiscountScope.WHOLE_CASE });
+
+    const revised = await repo.reviseItem(row.id, { discountAmount: null });
+
+    expect(revised!.discount).toBeNull();
+    expect(Money.fromStorage(revised!.trueUnitCost!).roundedToCents().format()).toBe('$11.50');
+  });
+
+  it('clears the question the missing scope raised', async () => {
+    const row = await rowAsRead(repo, {
+      name: 'DryNite Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: '7.00',
+    });
+    expect(row.issues).toContain('UNKNOWN_DISCOUNT_SCOPE');
+
+    const revised = await repo.reviseItem(row.id, {
+      discountAmount: Money.of('7.00'),
+      scope: DiscountScope.WHOLE_CASE,
+    });
+
+    expect(revised!.issues).not.toContain('UNKNOWN_DISCOUNT_SCOPE');
+  });
+
+  it('does not create another order to hold the correction', async () => {
+    const row = await rowAsRead(repo, {
+      name: 'DryNite Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: null,
+    });
+    const before = await repo.recentOrders(50);
+
+    await repo.reviseItem(row.id, {
+      discountAmount: Money.of('7.00'),
+      scope: DiscountScope.WHOLE_CASE,
+    });
+
+    const after = await repo.recentOrders(50);
+    expect(after.map((o) => o.id)).toEqual(before.map((o) => o.id));
+    expect((await repo.itemsFor(row.orderId))).toHaveLength(1);
+  });
+
+  it('rewrites no history: what was paid and when is a record, not a working figure', async () => {
+    const order = await repo.createOrder();
+    const product = await repo.findOrCreateProduct({
+      displayName: 'DryNite Jumbo Size 6',
+      receiptName: 'DryNite Jumbo Size 6',
+      size: '21 CT',
+      upc: null,
+      category: Category.OTHER,
+    });
+    await repo.recordPrice(product.id, order.id, Money.of('11.50').toStorage(), Money.of('12.99').toStorage());
+    const before = await repo.historyFor(product.id);
+    expect(before.length).toBeGreaterThan(0);
+
+    const [row] = await repo.addItems([
+      {
+        orderId: order.id,
+        productId: product.id,
+        rawName: 'DryNite Jumbo Size 6',
+        displayName: 'DryNite Jumbo Size 6',
+        size: '21 CT',
+        upc: null,
+        supplierSku: null,
+        category: Category.OTHER,
+        casePrice: Money.of('45.99').toStorage(),
+        unitsPerCase: 4,
+        casesPurchased: 1,
+        looseUnits: 0,
+        discount: null,
+        trueUnitCost: null,
+        totalWholesaleCost: null,
+        suggestedPrice: null,
+        pricingSource: PricingSource.COST_TIER,
+        pricingRationale: '',
+        approvedPrice: null,
+        previousPrice: null,
+        confidence: ItemConfidence.NEEDS_REVIEW,
+        aiConfidence: 0.8,
+        issues: [],
+        sourcePhotoIds: [],
+        sourceText: [],
+      },
+    ]);
+
+    await repo.reviseItem(row!.id, {
+      discountAmount: Money.of('7.00'),
+      scope: DiscountScope.WHOLE_CASE,
+    });
+
+    expect(await repo.historyFor(product.id)).toEqual(before);
+  });
+
+  it('notices when the correction leaves an approved price under the cost', async () => {
+    const row = await rowAsRead(repo, {
+      name: 'DryNite Jumbo Size 6',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      discount: '7.00',
+    });
+    // Priced against the discounted cost, then the discount turns out not to exist.
+    await repo.reviseItem(row.id, { scope: DiscountScope.WHOLE_CASE });
+    await repo.approvePrice(row.id, Money.of('10.50'));
+
+    const revised = await repo.reviseItem(row.id, { discountAmount: null });
+
+    // $11.50 each now, against a $10.50 shelf price - a loss on every sale.
+    expect(revised!.issues).toContain('APPROVED_PRICE_BELOW_COST');
+  });
+});

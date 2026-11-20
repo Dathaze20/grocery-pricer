@@ -200,9 +200,22 @@ export class OrderQueryEngine {
         }
       }
 
-      // Every meaningful word has to land somewhere. "corn oil 48" must not match plain
-      // "vegetable oil" just because "oil" is in both.
-      if (words.length > 0 && matchedWords < words.length) continue;
+      /*
+       * Every meaningful word has to land somewhere. "corn oil 48" must not match plain
+       * "vegetable oil" just because "oil" is in both.
+       *
+       * One exception, and it is narrow. When the owner names a pack size, that size has
+       * already thrown out every row it does not fit - so a single descriptive word that is
+       * simply not printed on the receipt should not then sink the match as well. Asked about
+       * the "jumbo diapers 21CT", a receipt that prints "DRYNITE JUMBO #6 21CT" and no word
+       * like "diapers" anywhere was answering "I could not find that in this order", about a
+       * product sitting in the order. Two words must still land, so a different product at the
+       * same pack size cannot slip through on its size alone, and the row scores below a clean
+       * match so a cleaner one always wins.
+       */
+      const slack = askedSize !== null && matchedWords >= 2 ? 1 : 0;
+      if (words.length > 0 && matchedWords < words.length - slack) continue;
+      if (matchedWords < words.length) score -= 0.5;
 
       if (askedSize !== null) {
         score += 2;

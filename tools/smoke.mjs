@@ -449,6 +449,44 @@ async function main() {
       'labels on screen: ' + (await page.locator('.row-button .t-cap').allInnerTexts()).join(' | '),
     );
 
+    // --- a discount the reading missed -----------------------------------
+    // The receipt prints money off four lines below its product, and a reading that loses it
+    // leaves a cost that is simply too high. The owner has the paper, so they can say.
+    // The details live behind the row, so open it first - once the "Saved" toast has gone,
+    // since it sits over the row it is reporting on.
+    // The confirmation sits over the top of the list, so it has to leave on its own: while it
+    // was stuck there it swallowed every tap on the first product's card. It lives a known
+    // 2600ms, so waiting that out is deterministic rather than a race.
+    await page.waitForTimeout(3200);
+    check(
+      'the saved confirmation gets out of the way on its own',
+      (await page.locator('.toast').count()) === 0,
+    );
+    await page.locator('.row-button.bare').first().click();
+    const discountBox = page.locator('input[aria-label^="Printed discount"]').first();
+    await page.waitForSelector('input[aria-label^="Printed discount"]', { timeout: 10000 });
+    check('the card offers somewhere to enter a printed discount', await discountBox.isVisible());
+
+    await discountBox.fill('6.00');
+    check(
+      'and shows what it would do before anything is applied',
+      (await page.locator('main').innerText()).includes('$18.00'),
+    );
+    await page.locator('button:has-text("Off the whole case")').first().click();
+    await page.waitForTimeout(700);
+
+    const afterDiscount = await page.locator('main').innerText();
+    check('the discount comes off the case', afterDiscount.includes('$18.00'), afterDiscount.slice(0, 300));
+    check(
+      'and the cost each follows it down',
+      afterDiscount.includes('$1.50'),
+      afterDiscount.slice(0, 300),
+    );
+    check(
+      'while the price the owner saved stays theirs',
+      (await page.locator('text=Your price').count()) > 0,
+    );
+
     await page.click('button:has-text("Back")');
     await page.waitForTimeout(300);
 
@@ -457,6 +495,70 @@ async function main() {
     check('the order is still there after a reload', await page.locator('text=NEW ORDER').isVisible());
     check(
       'the processed order is listed',
+      (await page.locator('text=/1 product/').count()) >= 1,
+    );
+
+    // --- deleting an order ------------------------------------------------
+    // The confirmation has to say which order, and Cancel has to mean cancel: a mis-tap on a
+    // row must not be able to cost somebody a receipt and its photographs.
+    const rowsBefore = await page.locator('.order-row').count();
+    await page.locator('button[aria-label^="Delete the"]').first().click();
+    await page.waitForSelector('[role=alertdialog]');
+    const dialog = await page.locator('[role=alertdialog]').innerText();
+    check('the confirmation says which order', dialog.includes('Delete the'), dialog);
+    check('it says how many products are in it', dialog.includes('1 product'), dialog);
+    check('it says what the order came to', dialog.includes('$18.00'), dialog);
+    check('it warns that the photographs go too', dialog.includes('photographs'), dialog);
+
+    await page.locator('button:has-text("Cancel - keep it")').click();
+    await page.waitForTimeout(300);
+    check(
+      'cancel keeps the order',
+      (await page.locator('.order-row').count()) === rowsBefore,
+    );
+    check('and closes the question', (await page.locator('[role=alertdialog]').count()) === 0);
+
+    // A second order, so deleting one can be shown to leave the other alone.
+    await page.click('text=NEW ORDER');
+    await page.setInputFiles('input[type=file]:not([multiple])', {
+      name: 'second.jpg',
+      mimeType: 'image/jpeg',
+      buffer: JPEG,
+    });
+    await page.waitForSelector('.photo img');
+    await page.click('button:has-text("Back")');
+    await page.waitForTimeout(400);
+    check(
+      'a second order is listed',
+      (await page.locator('.order-row').count()) === rowsBefore + 1,
+    );
+
+    const draftRow = page.locator('.order-row', { hasText: 'Not processed yet' }).first();
+    await draftRow.locator('button[aria-label^="Delete the"]').click();
+    await page.waitForSelector('[role=alertdialog]');
+    await page.locator('button:has-text("Delete this order")').click();
+    await page.waitForTimeout(600);
+
+    check(
+      'the chosen order is gone',
+      (await page.locator('.order-row', { hasText: 'Not processed yet' }).count()) === 0,
+    );
+    check(
+      'the list refreshes without a reload',
+      (await page.locator('.order-row').count()) === rowsBefore,
+    );
+    check(
+      'and the other order is untouched',
+      (await page.locator('text=/1 product/').count()) >= 1,
+    );
+
+    await page.reload({ waitUntil: 'networkidle' });
+    check(
+      'the deletion held after a reload',
+      (await page.locator('.order-row', { hasText: 'Not processed yet' }).count()) === 0,
+    );
+    check(
+      'and the order that was kept is still there, priced',
       (await page.locator('text=/1 product/').count()) >= 1,
     );
 

@@ -1,5 +1,6 @@
 import { Money } from './money';
 import { ProfitCalculator } from './cost';
+import { unitFromToken } from './matching';
 import type { QueryRequest } from './query';
 
 /** Which product a correction is aimed at. Resolved against the conversation, never guessed. */
@@ -487,9 +488,26 @@ function parseDiscountQuery(lower: string): ChatIntent | null {
   // longest run of words that is not about discounts is taken as the name.
   const candidate = lower
     .replace(DISCOUNT_WORDS_ALL, ' ')
-    .replace(/\$?\d[\d.,]*/g, ' ')
+    /*
+     * Only the money comes out, not every number.
+     *
+     * This removed any run of digits, so "did you record a flyer discount for the jumbo 21CT"
+     * lost the 21 and asked about "jumbo ct" - which matches nothing, or matches two pack sizes
+     * equally and has to ask which. The amount the owner quotes has to go, because it is their
+     * recollection and must never come back as evidence; the pack size has to stay, because it
+     * is how the product is told apart from the other size of itself on the same receipt.
+     */
+    .replace(/\$\s*\d[\d.,]*/g, ' ')
+    // A bare decimal is only money when no unit follows it: "$1.40" and "1.40" are the amount
+    // being asked about, while "2.7 lb" is how this product is told apart from the next one.
+    .replace(/\b\d+\.\d{1,2}\b\s*([a-z]+)?/g, (match, trailing: string | undefined) =>
+      trailing !== undefined && unitFromToken(trailing) !== null ? match : ' ',
+    )
     .replace(QUESTION_NOISE, ' ')
-    .replace(/[?.,!]/g, ' ')
+    // A full stop between two digits is a decimal point, not punctuation. Removing it turned
+    // "filet 2.7 lb" into "filet 2 7 lb", and the size stopped being a size.
+    .replace(/[?!,]/g, ' ')
+    .replace(/\.(?!\d)/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   const phrase = productPhrase(stripFillers(candidate));

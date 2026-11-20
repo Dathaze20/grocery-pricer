@@ -123,6 +123,17 @@ export function SendIcon(props: IconProps): JSX.Element {
 }
 
 /** A microphone, for asking out loud instead of typing on a phone with cold hands. */
+export function TrashIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M4 7h16" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M6 7l1 13h10l1-13" />
+      <path d="M9 7V4h6v3" />
+    </Svg>
+  );
+}
+
 export function MicIcon({ size = 24 }: { size?: number }): JSX.Element {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"

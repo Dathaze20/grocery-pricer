@@ -4,8 +4,9 @@ import type { Repository } from '../../data/repository';
 import { OrderStatus, type StoredOrder, isIncomplete } from '../../data/schema';
 import type { Screen } from '../App';
 import { TopBar } from '../components/TopBar';
-import { CameraIcon, ChevronRightIcon, SettingsIcon } from '../components/icons';
+import { CameraIcon, ChevronRightIcon, SettingsIcon, TrashIcon } from '../components/icons';
 import { hasKey } from '../services';
+import { deleteSavedOrder } from '../orderDelete';
 
 export function Home(props: { repo: Repository; go: (screen: Screen) => void }): JSX.Element {
   const { repo, go } = props;
@@ -13,6 +14,22 @@ export function Home(props: { repo: Repository; go: (screen: Screen) => void }):
   // null until the stored key has been looked up. Starting at `true` would hide the setup
   // prompt for a moment on every launch, including the one launch where it matters.
   const [keyed, setKeyed] = useState<boolean | null>(null);
+  /*
+   * The order the owner has asked to delete, and what is in it.
+   *
+   * Held as the order itself rather than an id, so the confirmation can describe exactly what
+   * would go - the date, how many products were read, what it came to. An id in a dialog is not
+   * something anyone can check against the receipt in their hand. The count is looked up when
+   * they ask, not for every row on the screen.
+   */
+  const [pending, setPending] = useState<{ order: StoredOrder; products: number } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    const listed = await repo.recentOrders(15);
+    setOrders(listed);
+  }, [repo]);
 
   useEffect(() => {
     // Clear out abandoned empty drafts before listing, so backing out of NEW ORDER does not
@@ -23,6 +40,37 @@ export function Home(props: { repo: Repository; go: (screen: Screen) => void }):
       .then(setOrders);
     void hasKey(repo).then(setKeyed);
   }, [repo]);
+
+  const askDelete = useCallback(
+    async (order: StoredOrder) => {
+      // An order being read is work in progress, and deleting it from under the reader would
+      // leave the run writing into rows that are no longer there.
+      if (order.status === OrderStatus.PROCESSING) return;
+      setDeleteError(null);
+      const items = await repo.itemsFor(order.id);
+      setPending({ order, products: items.length });
+    },
+    [repo],
+  );
+
+  const confirmDelete = useCallback(async () => {
+    if (pending === null) return;
+    setDeleting(true);
+    const outcome = await deleteSavedOrder(repo, pending.order.id);
+    setDeleting(false);
+
+    if (outcome.kind === 'failed') {
+      // The order is still there, so the dialog stays open saying so. Closing it would read as
+      // a deletion that happened.
+      setDeleteError(outcome.message);
+      return;
+    }
+
+    setPending(null);
+    if (outcome.kind === 'processing') setDeleteError(outcome.message);
+    // Re-read from storage rather than removing the row on screen and hoping it matched.
+    await refresh();
+  }, [pending, repo, refresh]);
 
   const startOrder = useCallback(async () => {
     const order = await repo.createOrder();
@@ -77,12 +125,17 @@ export function Home(props: { repo: Repository; go: (screen: Screen) => void }):
         {orders.length > 0 && (
           <section className="stack">
             <h2 className="t-section">Recent orders</h2>
+            {deleteError !== null && (
+              <p className="notice warn" role="status">
+                {deleteError}
+              </p>
+            )}
             <div className="list">
               {orders.map((order) => (
+                <div className="card order-row" key={order.id}>
                 <button
                   type="button"
-                  className="card row-button"
-                  key={order.id}
+                  className="row-button bare grow"
                   onClick={() =>
                     go(
                       order.status === OrderStatus.READY
@@ -114,9 +167,60 @@ export function Home(props: { repo: Repository; go: (screen: Screen) => void }):
                   </span>
                   <ChevronRightIcon size={18} />
                 </button>
+                {/* Not offered while an order is being read: see askDelete. */}
+                {order.status !== OrderStatus.PROCESSING && (
+                  <button
+                    type="button"
+                    className="btn btn-quiet row-delete"
+                    aria-label={`Delete the ${dateOf(order)} order`}
+                    onClick={() => void askDelete(order)}
+                  >
+                    <TrashIcon size={18} />
+                  </button>
+                )}
+                </div>
               ))}
             </div>
           </section>
+        )}
+
+        {pending !== null && (
+          /*
+           * Deleting an order throws away its photographs as well as its products, and there is
+           * no undoing it. So the question says exactly which order - the date, how many
+           * products came off it, what it came to - and Cancel is the first and plainest button
+           * on it. A mis-tap on a row must not be able to cost anybody a receipt.
+           */
+          <div className="notice warn" role="alertdialog" aria-label="Delete this order?">
+            <p style={{ marginTop: 0 }}>
+              <strong>Delete the {dateOf(pending.order)} order?</strong>
+            </p>
+            <p className="t-cap" style={{ marginTop: 0 }}>
+              {pending.products === 1 ? '1 product' : `${pending.products} products`}
+              {pending.order.totalWholesaleCost > 0 &&
+                `, ${Money.fromStorage(pending.order.totalWholesaleCost).format()}`}
+              . Its photographs go with it, and this cannot be undone. Everything else you have
+              saved - your other orders, your prices and what the app remembers about products -
+              stays.
+            </p>
+            <div className="stack">
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                onClick={() => setPending(null)}
+              >
+                Cancel - keep it
+              </button>
+              <button
+                type="button"
+                className="btn btn-quiet btn-block"
+                disabled={deleting}
+                onClick={() => void confirmDelete()}
+              >
+                {deleting ? 'Deleting...' : 'Delete this order'}
+              </button>
+            </div>
+          </div>
         )}
 
         {orders.length === 0 && (

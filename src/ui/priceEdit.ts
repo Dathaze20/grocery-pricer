@@ -103,6 +103,56 @@ export function readPriceEdit(text: string, stored: Money | null): PriceEdit {
  * the exact box is the owner's reasoning in progress - it has not produced a price yet, so
  * nothing on the row looks dirty, and a reload would silently take it.
  */
-export function holdsUnsavedWork(edit: PriceEdit, targetText: string): boolean {
-  return edit.holdsUpdates || targetText.trim().length > 0;
+export function holdsUnsavedWork(
+  edit: PriceEdit,
+  targetText: string,
+  discountText = '',
+): boolean {
+  // A discount half-typed off the paper is the same kind of work: unsaved, and only in the box.
+  return edit.holdsUpdates || targetText.trim().length > 0 || discountText.trim().length > 0;
+}
+
+/**
+ * What the discount box currently means.
+ *
+ * The same reading as a price, with the two rules a discount adds: it is money off, so it may
+ * not exceed the case it comes off, and an empty box is simply nothing to apply rather than a
+ * change to be rescued. Shares the parsing above on purpose - a second reader would eventually
+ * disagree with the first about what "6." means.
+ */
+export function readDiscountEdit(text: string, casePrice: Money | null): PriceEdit {
+  const edit = readPriceEdit(text, null);
+
+  if (edit.state === 'negative') {
+    return { ...edit, message: 'A discount is money off - enter it without the minus sign.' };
+  }
+  if (edit.state === 'too-precise') {
+    return { ...edit, message: 'Discounts go to the cent - two decimal places at most.' };
+  }
+  if (edit.state === 'incomplete') {
+    return { ...edit, message: 'That is not an amount yet.' };
+  }
+  if (edit.value === null) return edit;
+
+  if (edit.value.isZero) {
+    return {
+      ...edit,
+      value: null,
+      state: 'incomplete',
+      message: 'Nothing off is not a discount.',
+      canSave: false,
+    };
+  }
+  // A discount larger than the case is a misread, and applying it would invent money.
+  if (casePrice !== null && edit.value.greaterThan(casePrice)) {
+    return {
+      ...edit,
+      value: null,
+      state: 'incomplete',
+      message: `That is more than the ${casePrice.format()} case.`,
+      canSave: false,
+    };
+  }
+
+  return edit;
 }

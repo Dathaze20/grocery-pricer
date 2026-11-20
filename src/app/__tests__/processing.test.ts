@@ -2,12 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeAiProvider } from '../../ai/fake';
 import { GeminiProvider } from '../../ai/provider';
 import { Money } from '../../core/money';
-import { ItemConfidence } from '../../core/models';
+import { DiscountScope, ItemConfidence } from '../../core/models';
 import { PricingSource } from '../../core/pricing';
 import { Repository } from '../../data/repository';
 import { resetDbHandle } from '../../data/db';
 import { OrderStatus, MessageRole, type StoredPhoto, isIncomplete } from '../../data/schema';
-import { OrderImageType, type AiExtractedItem } from '../../core/ai-types';
+import { OrderImageType, type AiDiscountLine, type AiExtractedItem } from '../../core/ai-types';
 import { APPROVED_PRICE_BELOW_COST, GROUP_REQUEST_BUDGET, processOrder } from '../processing';
 
 let dbCounter = 0;
@@ -1585,5 +1585,384 @@ describe('a model that says it is busy', () => {
     await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
 
     expect(provider.calls.filter((c) => c.startsWith('extractOrder'))).toHaveLength(1);
+  });
+});
+
+describe('a receipt that prints its discounts on separate lines', () => {
+  /**
+   * The layout the real paper uses, with invented names.
+   *
+   * Product, barcode, case price and pack, the flyer words, a reference number, the amount off,
+   * a units line. The amount is four lines below the product it belongs to, and the next product
+   * starts immediately underneath it.
+   */
+  function receiptItem(over: Partial<AiExtractedItem> = {}): AiExtractedItem {
+    return extractedItem({
+      rawName: 'DRYNITE JUMBO #6 21CT',
+      canonicalName: 'DryNite Jumbo Size 6',
+      size: '21 CT',
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      sourceText: ['DRYNITE JUMBO #6 21CT', '45.99   4'],
+      ...over,
+    });
+  }
+
+  function discountLine(over: Partial<AiDiscountLine> = {}): AiDiscountLine {
+    return {
+      amount: '7.00',
+      productName: 'DRYNITE JUMBO',
+      appliesToIndex: 0,
+      reference: 'F12',
+      sourcePhotoIds: [1],
+      sourceText: ['FLYER DISCOUNT', 'F12', '-7.00'],
+      ...over,
+    };
+  }
+
+  it('takes the discount off the case and gets the cost each right', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [receiptItem()],
+      discountLines: [discountLine()],
+      warnings: [],
+    });
+
+    const result = await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    expect(result.ok).toBe(true);
+    const [row] = await repo.itemsFor(orderId);
+    // $45.99 less $7.00 is $38.99 the case; a case of four is $9.75 each.
+    expect(row!.discount?.amount).toBe(Money.parseOrNull('7.00')!.toStorage());
+    expect(row!.discount?.scope).toBe(DiscountScope.WHOLE_CASE);
+    expect(Money.fromStorage(row!.trueUnitCost!).roundedToCents().format()).toBe('$9.75');
+    // And nothing is left flagged, because the paper settled it.
+    expect(row!.issues).not.toContain('UNKNOWN_DISCOUNT_SCOPE');
+  });
+
+  it('puts the order total on the discounted figure, not the printed one', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [receiptItem()],
+      discountLines: [discountLine()],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const order = await repo.order(orderId);
+    expect(Money.fromStorage(order!.totalWholesaleCost).format()).toBe('$38.99');
+  });
+
+  it('keeps two sizes of one product apart and discounts each on its own', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [
+        receiptItem(),
+        receiptItem({
+          rawName: 'DRYNITE JUMBO #5 24CT',
+          canonicalName: 'DryNite Jumbo Size 5',
+          size: '24 CT',
+          sourceText: ['DRYNITE JUMBO #5 24CT', '45.99   4'],
+        }),
+      ],
+      // What the paper prints: the words, a reference, the amount - and no product name, so
+      // the position below its own product is the evidence.
+      discountLines: [
+        discountLine({ appliesToIndex: 0, productName: null }),
+        discountLine({ appliesToIndex: 1, productName: null }),
+      ],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const rows = await repo.itemsFor(orderId);
+    // Two products, not one merged row, and each with its own money off.
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.discount?.amount)).toEqual([
+      Money.parseOrNull('7.00')!.toStorage(),
+      Money.parseOrNull('7.00')!.toStorage(),
+    ]);
+    expect(new Set(rows.map((r) => r.productId)).size).toBe(2);
+  });
+
+  it('says so, and takes nothing off, when it cannot tell whose discount it is', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [
+        receiptItem(),
+        receiptItem({
+          rawName: 'DRYNITE JUMBO #5 24CT',
+          canonicalName: 'DryNite Jumbo Size 5',
+          size: '24 CT',
+        }),
+      ],
+      // Names both sizes equally well, and says nothing about which.
+      discountLines: [discountLine({ appliesToIndex: null, productName: 'DRYNITE JUMBO' })],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const rows = await repo.itemsFor(orderId);
+    expect(rows.every((r) => r.discount === null)).toBe(true);
+    const order = await repo.order(orderId);
+    expect(order!.warnings.some((w) => /could not tell which product/i.test(w))).toBe(true);
+    // The cost shown is the undiscounted one, which is why the warning has to be there.
+    expect(Money.fromStorage(rows[0]!.trueUnitCost!).roundedToCents().format()).toBe('$11.50');
+  });
+
+  it('keeps a repeated purchase of one product as two rows with two discounts', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [receiptItem(), receiptItem()],
+      discountLines: [
+        discountLine({ appliesToIndex: 0, amount: '7.00' }),
+        discountLine({ appliesToIndex: 1, amount: '4.50' }),
+      ],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const rows = await repo.itemsFor(orderId);
+    // The same product at two different net costs is two real purchases, not one to merge.
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.discount?.amount).sort()).toEqual(
+      [Money.parseOrNull('4.50')!.toStorage(), Money.parseOrNull('7.00')!.toStorage()].sort(),
+    );
+  });
+
+  it('does not take the same money off twice when a line is also nested', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [
+        receiptItem({
+          discount: { amount: '7.00', scope: DiscountScope.WHOLE_CASE, appliesToUnits: null },
+        }),
+      ],
+      // The same discount, listed as well as nested - which the prompt explicitly allows.
+      discountLines: [discountLine()],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const [row] = await repo.itemsFor(orderId);
+    expect(row!.discount?.amount).toBe(Money.parseOrNull('7.00')!.toStorage());
+    expect(Money.fromStorage(row!.trueUnitCost!).roundedToCents().format()).toBe('$9.75');
+  });
+});
+
+describe('the discount evidence has to agree with itself', () => {
+  function sizedItem(name: string, size: string, over: Partial<AiExtractedItem> = {}) {
+    return extractedItem({
+      rawName: name,
+      canonicalName: name,
+      size,
+      casePrice: '45.99',
+      unitsPerCase: 4,
+      sourceText: [name, '45.99   4'],
+      ...over,
+    });
+  }
+
+  it('takes nothing off when the line names one size and points at the other', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [
+        sizedItem('DRYNITE JUMBO #6 21CT', '21 CT'),
+        sizedItem('DRYNITE JUMBO #5 24CT', '24 CT'),
+      ],
+      discountLines: [
+        {
+          amount: '7.00',
+          // Says size 5, points at size 6.
+          productName: 'DRYNITE JUMBO #5 24CT',
+          appliesToIndex: 0,
+          reference: 'F12',
+          sourcePhotoIds: [1],
+          sourceText: ['FLYER DISCOUNT', 'F12', '-7.00'],
+        },
+      ],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const rows = await repo.itemsFor(orderId);
+    expect(rows.every((r) => r.discount === null)).toBe(true);
+    // Both costs are the undiscounted ones, and the order says why.
+    expect(Money.fromStorage(rows[0]!.trueUnitCost!).roundedToCents().format()).toBe('$11.50');
+    const order = await repo.order(orderId);
+    expect(order!.warnings.some((w) => /names one product and points at another/.test(w))).toBe(true);
+  });
+
+  it('does not give a second case a discount that was listed twice for the first', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    const twice = {
+      amount: '7.00',
+      productName: 'DRYNITE JUMBO',
+      appliesToIndex: 0,
+      reference: 'F12',
+      sourcePhotoIds: [1],
+      sourceText: ['FLYER DISCOUNT', 'F12', '-7.00'],
+    };
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      // The same product bought twice, as a real receipt prints it twice.
+      items: [sizedItem('DRYNITE JUMBO #6 21CT', '21 CT'), sizedItem('DRYNITE JUMBO #6 21CT', '21 CT')],
+      discountLines: [twice, { ...twice }],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const rows = await repo.itemsFor(orderId);
+    expect(rows).toHaveLength(2);
+    const discounted = rows.filter((r) => r.discount !== null);
+    expect(discounted).toHaveLength(1);
+    // One case at $38.99 and one at $45.99 - not two at $38.99.
+    expect(Money.fromStorage((await repo.order(orderId))!.totalWholesaleCost).format()).toBe('$84.98');
+  });
+
+  it('takes nothing off when the line names a product the position does not fit', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [
+        sizedItem('DRYNITE JUMBO #6 21CT', '21 CT'),
+        sizedItem('KETTLE CRISPS SEA SALT', '12 CT', { casePrice: '18.49', unitsPerCase: 12 }),
+      ],
+      discountLines: [
+        {
+          amount: '7.00',
+          // Names the crisps, points at the nappies. Something on this line was misread.
+          productName: 'KETTLE CRISPS SEA SALT',
+          appliesToIndex: 0,
+          reference: 'F12',
+          sourcePhotoIds: [1],
+          sourceText: ['FLYER DISCOUNT', 'F12', '-7.00'],
+        },
+      ],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const rows = await repo.itemsFor(orderId);
+    expect(rows.every((r) => r.discount === null)).toBe(true);
+    const order = await repo.order(orderId);
+    expect(order!.warnings.some((w) => /names one product and points at another/.test(w))).toBe(true);
+  });
+
+  it('reads a discount the model copied with its minus sign', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [sizedItem('DRYNITE JUMBO #6 21CT', '21 CT')],
+      discountLines: [
+        {
+          amount: '-7.00',
+          productName: null,
+          appliesToIndex: 0,
+          reference: 'F12',
+          sourcePhotoIds: [1],
+          sourceText: ['FLYER DISCOUNT', 'F12', '-7.00'],
+        },
+      ],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const [row] = await repo.itemsFor(orderId);
+    expect(Money.fromStorage(row!.trueUnitCost!).roundedToCents().format()).toBe('$9.75');
+    // Stored positive, with the printed minus still in the evidence behind it.
+    expect(Money.fromStorage(row!.discount!.amount).format()).toBe('$7.00');
+    expect(row!.sourceText).toContain('-7.00');
+  });
+
+  it('takes nothing off for a negative that was never called a discount', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [sizedItem('DRYNITE JUMBO #6 21CT', '21 CT')],
+      discountLines: [
+        {
+          amount: '-7.00',
+          productName: null,
+          appliesToIndex: 0,
+          reference: null,
+          sourcePhotoIds: [1],
+          sourceText: ['ADJ 4471'],
+        },
+      ],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const [row] = await repo.itemsFor(orderId);
+    expect(row!.discount).toBeNull();
+    expect(Money.fromStorage(row!.trueUnitCost!).roundedToCents().format()).toBe('$11.50');
+  });
+
+  it('refuses an impossible discount even when it arrived negative', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [sizedItem('DRYNITE JUMBO #6 21CT', '21 CT')],
+      discountLines: [
+        {
+          amount: '-99.99',
+          productName: null,
+          appliesToIndex: 0,
+          reference: 'F12',
+          sourcePhotoIds: [1],
+          sourceText: ['FLYER DISCOUNT', 'F12', '-99.99'],
+        },
+      ],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const [row] = await repo.itemsFor(orderId);
+    // More off than the case cost is a misread, whichever sign it wore.
+    expect(row!.discount).toBeNull();
+    expect(Money.fromStorage(row!.trueUnitCost!).roundedToCents().format()).toBe('$11.50');
   });
 });
