@@ -142,8 +142,19 @@ function placeLine(
   if (pointed !== null) {
     // Nothing is named, so the layout is all there is - and it is what the model could see.
     if (named === null) return { kind: 'at', at: pointed };
-    // The name matches no row at all, so it contradicts nothing either.
-    if (tied.length === 0) return { kind: 'at', at: pointed };
+
+    /*
+     * A name that was given has to support the product being pointed at.
+     *
+     * Treating "the name matches no row" as "the name contradicts no row" left the index
+     * trusted on its own wherever the name was unrecognisable - and a name nobody can place is
+     * exactly the case where the index is least likely to be right. It also covered a quieter
+     * one: the product the name really belongs to may already hold its discount, so it is no
+     * longer among the candidates, and the line was then applied to whatever the index happened
+     * to say instead. Either way the two pieces of evidence on the line do not agree, and a
+     * discount is only ever applied where they do.
+     */
+    if (!supports(named, items[pointed]!)) return { kind: 'conflict' };
 
     if (!tied.some((candidate) => candidate.at === pointed)) return { kind: 'conflict' };
     // The name agrees, and with this row alone.
@@ -169,6 +180,19 @@ function nameOf(line: AiDiscountLine): string | null {
   return NameNormalizer.tokens(named).length === 0 ? null : named;
 }
 
+/** How well a line's name fits one row, by whichever of its two names fits better. */
+function scoreFor(named: string, item: AiExtractedItem): number {
+  return Math.max(
+    NameNormalizer.similarity(named, item.rawName),
+    NameNormalizer.similarity(named, item.canonicalName),
+  );
+}
+
+/** Whether this row is one the name could be describing at all. */
+function supports(named: string, item: AiExtractedItem): boolean {
+  return scoreFor(named, item) >= DISCOUNT_NAME_MATCH;
+}
+
 /** The best-matching untaken rows, and anything tied with them. */
 function topMatches(
   named: string,
@@ -178,11 +202,7 @@ function topMatches(
   const scored: Array<{ at: number; score: number }> = [];
   for (let at = 0; at < items.length; at += 1) {
     if (taken.has(at)) continue;
-    const item = items[at]!;
-    const score = Math.max(
-      NameNormalizer.similarity(named, item.rawName),
-      NameNormalizer.similarity(named, item.canonicalName),
-    );
+    const score = scoreFor(named, items[at]!);
     if (score >= DISCOUNT_NAME_MATCH) scored.push({ at, score });
   }
   if (scored.length === 0) return [];

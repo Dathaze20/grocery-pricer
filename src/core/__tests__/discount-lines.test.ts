@@ -214,14 +214,83 @@ describe('two sizes of one product on the same receipt', () => {
     expect(placed.warnings).toEqual([]);
   });
 
-  it('still takes the index when the name matches nothing on the receipt', () => {
-    // A name that answers to no row contradicts no row either. The layout stands.
+  it('refuses the index when the name it gives fits no product at all', () => {
+    /*
+     * "Matches nothing" is not "contradicts nothing".
+     *
+     * A name nobody can place is the very case where the index is least likely to be right -
+     * something on that line was misread, and there is no telling which part. The layout alone
+     * was enough to apply it here, which is money off a product on the strength of evidence
+     * that is known to be damaged.
+     */
     const placed = associateDiscountLines(
       [sizeSix, sizeFive],
       [line({ appliesToIndex: 1, productName: 'MYSTERY ITEM' })],
     );
 
+    expect(placed.items.every((i) => i.discount === null)).toBe(true);
+    expect(placed.warnings).toHaveLength(1);
+    expect(placed.warnings[0]).toContain('names one product and points at another');
+  });
+
+  it('refuses the index when the name belongs to a different product entirely', () => {
+    const placed = associateDiscountLines(
+      [sizeSix, other()],
+      [line({ appliesToIndex: 0, productName: 'KETTLE CRISPS SEA SALT' })],
+    );
+
+    expect(placed.items.every((i) => i.discount === null)).toBe(true);
+    expect(placed.warnings[0]).toContain('names one product and points at another');
+  });
+
+  it('refuses the index when the product the name fits already has its discount', () => {
+    /*
+     * The quiet one.
+     *
+     * The product the name really belongs to is already holding a discount, so it is not among
+     * the candidates any more - and with nothing left for the name to match, the line was
+     * applied to whatever the index said instead. That is a second deduction landing on an
+     * innocent product because the first one was already spoken for.
+     */
+    const spokenFor = other({
+      discount: { amount: '2.00', scope: DiscountScope.WHOLE_CASE, appliesToUnits: null },
+    });
+    const placed = associateDiscountLines(
+      [spokenFor, sizeSix],
+      [line({ appliesToIndex: 1, productName: 'KETTLE CRISPS SEA SALT' })],
+    );
+
+    // The crisps keep the $2.00 they came with, and the nappies get nothing.
+    expect(placed.items[0]!.discount?.amount).toBe('2.00');
+    expect(placed.items[1]!.discount).toBeNull();
+    expect(placed.warnings).toHaveLength(1);
+    expect(placed.warnings[0]).toContain('names one product and points at another');
+  });
+
+  it('still takes the index for a flyer line that names nothing at all', () => {
+    // Unchanged, and the shape the real receipt prints: the words, a reference, the amount.
+    const placed = associateDiscountLines(
+      [sizeSix, sizeFive],
+      [line({ appliesToIndex: 1, productName: null })],
+    );
+
+    expect(placed.items[0]!.discount).toBeNull();
     expect(placed.items[1]!.discount?.amount).toBe('7.00');
+    expect(placed.warnings).toEqual([]);
+  });
+
+  it('still takes it when the line names nothing and a product is already spoken for', () => {
+    const spokenFor = other({
+      discount: { amount: '2.00', scope: DiscountScope.WHOLE_CASE, appliesToUnits: null },
+    });
+    const placed = associateDiscountLines(
+      [spokenFor, sizeSix],
+      [line({ appliesToIndex: 1, productName: null })],
+    );
+
+    expect(placed.items[0]!.discount?.amount).toBe('2.00');
+    expect(placed.items[1]!.discount?.amount).toBe('7.00');
+    expect(placed.warnings).toEqual([]);
   });
 
   it('places a line that names the size itself', () => {

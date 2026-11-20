@@ -1850,6 +1850,38 @@ describe('the discount evidence has to agree with itself', () => {
     expect(Money.fromStorage((await repo.order(orderId))!.totalWholesaleCost).format()).toBe('$84.98');
   });
 
+  it('takes nothing off when the line names a product the position does not fit', async () => {
+    const repo = await freshRepo();
+    const { orderId } = await orderWithPhoto(repo);
+    const provider = new FakeAiProvider();
+    provider.queueExtraction({
+      supplier: 'SUPPLIER',
+      items: [
+        sizedItem('DRYNITE JUMBO #6 21CT', '21 CT'),
+        sizedItem('KETTLE CRISPS SEA SALT', '12 CT', { casePrice: '18.49', unitsPerCase: 12 }),
+      ],
+      discountLines: [
+        {
+          amount: '7.00',
+          // Names the crisps, points at the nappies. Something on this line was misread.
+          productName: 'KETTLE CRISPS SEA SALT',
+          appliesToIndex: 0,
+          reference: 'F12',
+          sourcePhotoIds: [1],
+          sourceText: ['FLYER DISCOUNT', 'F12', '-7.00'],
+        },
+      ],
+      warnings: [],
+    });
+
+    await processOrder(repo, provider, orderId, { retryDelayMs: 0 });
+
+    const rows = await repo.itemsFor(orderId);
+    expect(rows.every((r) => r.discount === null)).toBe(true);
+    const order = await repo.order(orderId);
+    expect(order!.warnings.some((w) => /names one product and points at another/.test(w))).toBe(true);
+  });
+
   it('reads a discount the model copied with its minus sign', async () => {
     const repo = await freshRepo();
     const { orderId } = await orderWithPhoto(repo);
