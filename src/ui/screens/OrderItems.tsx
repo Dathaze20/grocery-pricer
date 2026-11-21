@@ -3,7 +3,7 @@ import { Money } from '../../core/money';
 import { ItemConfidence } from '../../core/models';
 import { NameNormalizer } from '../../core/matching';
 import { CostCalculator } from '../../core/cost';
-import { DiscountScope, makeDiscount } from '../../core/models';
+import { DiscountScope, affectsCost, discountScopeInWords, makeDiscount } from '../../core/models';
 import { caseEconomics, priceForTargetProfit, stepProfitTarget } from '../../core/profit';
 import { APPROVED_PRICE_BELOW_COST } from '../../app/processing';
 import type { Repository } from '../../data/repository';
@@ -115,6 +115,13 @@ function ItemRow(props: {
 
   const casePrice = item.casePrice === null ? null : Money.fromStorage(item.casePrice);
   const discountEdit = readDiscountEdit(discountText, casePrice);
+
+  // Only money that is actually in the cost is shown coming off it. A discount nobody has said
+  // what to do with is not a deduction yet, and showing it as one would be a lie in red.
+  const discountOff =
+    item.discount !== null && affectsCost(item.discount.scope)
+      ? Money.fromStorage(item.discount.amount)
+      : null;
 
   // Two things the receipt did not say, each of which leaves the cost wrong in its own way.
   const needsScope =
@@ -247,6 +254,51 @@ function ItemRow(props: {
           </span>
         </span>
       </button>
+
+      {/*
+        * What the case cost, with the flyer money shown coming off it.
+        *
+        * The card used to print the net figure as "Case cost" and the discount as a separate
+        * row reading "$7.00 (WHOLE_CASE)". Both numbers were there and neither explained the
+        * other: nothing said that $38.99 was $45.99 with seven taken off, and the one word
+        * that said what the seven applied to was the stored code. Written out as a
+        * subtraction, it reads the way the receipt does.
+        */}
+      <dl className="money">
+        {discountOff !== null && casePrice !== null ? (
+          <>
+            <div>
+              <dt>Case</dt>
+              <dd>{casePrice.format()}</dd>
+            </div>
+            <div className="money-off">
+              <dt>Flyer discount</dt>
+              <dd>−{discountOff.format()}</dd>
+            </div>
+            <div className="money-net">
+              <dt>Net case</dt>
+              <dd>{netCaseCost?.format() ?? '—'}</dd>
+            </div>
+          </>
+        ) : (
+          <div className="money-net">
+            <dt>Case cost</dt>
+            <dd>{netCaseCost?.format() ?? '—'}</dd>
+          </div>
+        )}
+        <div className="money-each">
+          <dt>Cost each</dt>
+          <dd>
+            {item.trueUnitCost === null
+              ? 'not read'
+              : Money.fromStorage(item.trueUnitCost).format()}
+          </dd>
+        </div>
+        <div>
+          <dt>In the case</dt>
+          <dd>{unitsPerCase === null ? '—' : `${unitsPerCase} to sell`}</dd>
+        </div>
+      </dl>
 
       <div className="pc-strip">
         <span className="pc-label">Profit per case</span>
@@ -430,19 +482,48 @@ function ItemRow(props: {
              * what it says. Confirming is one press, and that press is what makes it whole-case:
              * nothing here assumes a scope the owner has not chosen.
              */
-            <div className="notice">
-              <p style={{ marginTop: 0 }}>
-                {item.discount === null
-                  ? 'If the receipt shows money off this case and it is not here, type the printed amount.'
-                  : `Recorded: ${Money.fromStorage(item.discount.amount).format()} off. Type a new amount to correct it.`}
+            <div className="notice discount-panel">
+              {/*
+                * What is recorded, before what can be changed.
+                *
+                * The panel used to open with "Recorded: $7.00 off. Type a new amount to correct
+                * it." and close with a bare line reading "There is no discount on this product"
+                * - which was the remove button, and read as the app contradicting itself one
+                * line after saying a discount was recorded. The state is now a statement, the
+                * correction is a labelled box, and removing is a button that says so.
+                */}
+              <p className={`discount-state ${item.discount === null ? 'is-none' : ''}`}>
+                {item.discount === null ? (
+                  'No discount recorded'
+                ) : (
+                  <>
+                    {/* Read and in the cost, or read and waiting: never both at once. The
+                        first wording said "Discount applied: $7.00 not yet applied". */}
+                    {discountOff !== null ? 'Discount applied: ' : 'Discount read: '}
+                    <strong className="money-off-ink">
+                      {Money.fromStorage(item.discount.amount).format()}
+                    </strong>
+                    {discountOff !== null ? ` ${discountScopeInWords(item.discount.scope)}` : ''}
+                  </>
+                )}
               </p>
-              <div className="row">
+              <p className="t-cap" style={{ marginTop: 0 }}>
+                {item.discount === null
+                  ? 'If the receipt shows money off this case, type the printed amount.'
+                  : discountOff === null
+                    ? 'It is not in the cost yet, because the receipt does not say what it comes off.'
+                    : 'Type a new amount to correct it.'}
+              </p>
+              <label className="t-cap" htmlFor={`discount-${item.id}`}>
+                Printed discount
+              </label>
+              <div className="row discount-row">
                 <input
                   id={`discount-${item.id}`}
                   type="text"
                   inputMode="decimal"
                   className="grow"
-                  placeholder="e.g. 7.00"
+                  placeholder="7.00"
                   aria-label={`Printed discount for ${item.displayName}`}
                   value={discountText}
                   onChange={(event) => setDiscountText(event.target.value)}
@@ -462,24 +543,29 @@ function ItemRow(props: {
                 </button>
               </div>
               {discountEdit.message !== null && (
-                <p className="t-cap" role="status">
+                <p className="t-cap is-warn" role="status">
                   {discountEdit.message}
                 </p>
               )}
+              {/* The arithmetic before it is saved, so nothing is a surprise afterwards. */}
               {discountEdit.value !== null && unitsPerCase !== null && unitsPerCase > 0 && (
-                <p className="t-cap">
-                  {casePrice.format()} less {discountEdit.value.format()} is{' '}
-                  {casePrice.minus(discountEdit.value).format()} the case,{' '}
-                  {casePrice.minus(discountEdit.value).divideBy(unitsPerCase).format()} each.
+                <p className="t-cap discount-preview" role="status">
+                  {casePrice.format()} less{' '}
+                  <span className="money-off-ink">{discountEdit.value.format()}</span> is{' '}
+                  <strong>{casePrice.minus(discountEdit.value).format()}</strong> the case,{' '}
+                  <strong>
+                    {casePrice.minus(discountEdit.value).divideBy(unitsPerCase).format()}
+                  </strong>{' '}
+                  each.
                 </p>
               )}
               {item.discount !== null && (
                 <button
                   type="button"
-                  className="btn btn-quiet btn-block"
+                  className="btn btn-remove btn-block"
                   onClick={() => void revise({ discountAmount: null })}
                 >
-                  There is no discount on this product
+                  Remove discount
                 </button>
               )}
             </div>
@@ -507,15 +593,9 @@ function ItemRow(props: {
                 unitsPerCase={unitsPerCase}
                 targetText={targetText}
               />
+              {/* What the case cost and what it takes are the money block above; this is what
+                  the selling price does with it. */}
               <dl className="facts">
-                <div>
-                  <dt>Case cost</dt>
-                  <dd className="price">{netCaseCost?.format() ?? '—'}</dd>
-                </div>
-                <div>
-                  <dt>In the case</dt>
-                  <dd>{unitsPerCase ?? '—'} to sell</dd>
-                </div>
                 <div>
                   <dt>Case takes</dt>
                   <dd className="price">{economics.caseRevenue?.format() ?? '—'}</dd>
@@ -524,14 +604,6 @@ function ItemRow(props: {
                   <div>
                     <dt>{item.casesPurchased} cases bought</dt>
                     <dd className="price">{economics.totalProfit?.format() ?? '—'} in total</dd>
-                  </div>
-                )}
-                {item.discount !== null && (
-                  <div>
-                    <dt>Discount</dt>
-                    <dd className="price">
-                      {Money.fromStorage(item.discount.amount).format()} ({item.discount.scope})
-                    </dd>
                   </div>
                 )}
                 {item.previousPrice !== null && (

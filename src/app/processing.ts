@@ -1,5 +1,5 @@
-import { attachDiscountLines } from '../core/discount-lines';
-import { aiErrorMessage, isFatalForRun, isTransient, OrderImageType, type AiError, type AiOrderExtraction } from '../core/ai-types';
+import { attachCarriedDiscountLines, attachDiscountLines } from '../core/discount-lines';
+import { aiErrorMessage, isFatalForRun, isTransient, OrderImageType, type AiDiscountLine, type AiError, type AiOrderExtraction } from '../core/ai-types';
 import { mergeExtractions, validateExtraction, ExtractionIssue, type ValidatedItem } from '../core/ai-validate';
 import { CostCalculator } from '../core/cost';
 import { Money } from '../core/money';
@@ -191,6 +191,8 @@ export async function processOrder(
   }
 
   const batches: AiOrderExtraction[] = [];
+  /** Discount lines whose product was not in their own batch; tried again on the whole order. */
+  const stranded: AiDiscountLine[] = [];
   let batchesAttempted = 0;
   let batchesFailed = 0;
   for (let i = 0; i < paperwork.length; i += PHOTOS_PER_BATCH) {
@@ -234,7 +236,9 @@ export async function processOrder(
           ),
         );
         if (one.ok) {
-          recovered.push(attachDiscountLines(one.value));
+          const attached = attachDiscountLines(one.value);
+          recovered.push(attached.extraction);
+          stranded.push(...attached.carried);
           continue;
         }
 
@@ -320,10 +324,20 @@ export async function processOrder(
       });
       continue;
     }
-    batches.push(attachDiscountLines(result.value));
+    const attached = attachDiscountLines(result.value);
+    batches.push(attached.extraction);
+    stranded.push(...attached.carried);
   }
 
-  const merged = mergeExtractions(batches);
+  /*
+   * The second look at discounts whose product was in another photograph.
+   *
+   * A receipt is photographed in overlapping pieces and read two at a time, so a flyer line can
+   * sit in one batch and the product it belongs to in the next. Inside a batch there is nothing
+   * to attach it to; across the finished order there is. Barcode and name only here - a batch
+   * position counted rows in a list that no longer exists.
+   */
+  const merged = attachCarriedDiscountLines(mergeExtractions(batches), stranded);
   const validated = validateExtraction(merged, new Set(photos.map((p) => p.id)));
   progress('Working out costs');
 

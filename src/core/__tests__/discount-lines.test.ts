@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { associateDiscountLines, attachDiscountLines } from '../discount-lines';
+import {
+  associateDiscountLines,
+  attachCarriedDiscountLines,
+  attachDiscountLines,
+} from '../discount-lines';
 import { DiscountScope } from '../models';
 import { Money } from '../money';
 import type { AiDiscountLine, AiExtractedItem } from '../ai-types';
@@ -479,14 +483,28 @@ describe('what it refuses to do', () => {
     expect(placed.items[0]!.discount).toBeNull();
   });
 
-  it('refuses a line it can place on nothing', () => {
+  it('holds back a line whose product is not in this photograph', () => {
+    // Not refused yet: the receipt is read two photographs at a time, and the product this
+    // names may be in the next one. Inventing nothing, reporting nothing, keeping it.
     const placed = associateDiscountLines(
       [other()],
       [line({ appliesToIndex: null, productName: 'DRYNITE JUMBO' })],
     );
 
     expect(placed.items[0]!.discount).toBeNull();
-    expect(placed.warnings).toHaveLength(1);
+    expect(placed.warnings).toEqual([]);
+    expect(placed.carried).toHaveLength(1);
+  });
+
+  it('reports it once the whole order has been looked at', () => {
+    const merged = attachCarriedDiscountLines(
+      { supplier: 'SUPPLIER', items: [other()], warnings: [] },
+      [line({ appliesToIndex: null, productName: 'DRYNITE JUMBO' })],
+    );
+
+    expect(merged.items[0]!.discount).toBeNull();
+    expect(merged.warnings).toHaveLength(1);
+    expect(merged.warnings[0]).toContain('could not tell which product');
   });
 
   it('refuses a line that names nothing and has no position', () => {
@@ -531,11 +549,11 @@ describe('a whole batch', () => {
   it('passes a batch with no discount lines straight through', () => {
     const extraction = { supplier: 'SUPPLIER', items: [item()], warnings: [] };
 
-    expect(attachDiscountLines(extraction)).toBe(extraction);
+    expect(attachDiscountLines(extraction).extraction).toBe(extraction);
   });
 
   it('adds what could not be placed to the batch warnings', () => {
-    const attached = attachDiscountLines({
+    const { extraction: attached } = attachDiscountLines({
       supplier: 'SUPPLIER',
       items: [item()],
       discountLines: [line({ appliesToIndex: null, productName: null })],
@@ -544,5 +562,173 @@ describe('a whole batch', () => {
 
     expect(attached.warnings).toHaveLength(2);
     expect(attached.warnings[0]).toBe('something else');
+  });
+});
+
+
+describe('a discount whose product is in the next photograph', () => {
+  it('finds it once the photographs have been stitched together', () => {
+    // The flyer line was at the bottom of one photograph, its product at the top of the next.
+    const merged = attachCarriedDiscountLines(
+      { supplier: 'SUPPLIER', items: [other(), item()], warnings: [] },
+      [line({ appliesToIndex: null, productLineAbove: 'DRYNITE JUMBO #6 21CT', productName: null })],
+    );
+
+    expect(merged.items[1]!.discount?.amount).toBe('7.00');
+    expect(merged.warnings).toEqual([]);
+  });
+
+  it('does not use a position from a batch that no longer exists', () => {
+    /*
+     * The index counted rows in two photographs. In the finished order it points at whatever
+     * product happens to sit at that number - which is how a discount lands on something
+     * nobody bought it for.
+     */
+    const merged = attachCarriedDiscountLines(
+      { supplier: 'SUPPLIER', items: [other(), item()], warnings: [] },
+      [line({ appliesToIndex: 0, productName: 'SOMETHING NOT HERE' })],
+    );
+
+    expect(merged.items.every((i) => i.discount === null)).toBe(true);
+    expect(merged.warnings).toHaveLength(1);
+  });
+
+  it('counts a discount seen in two overlapping photographs once', () => {
+    const twice = line({
+      appliesToIndex: null,
+      productLineAbove: 'DRYNITE JUMBO #6 21CT',
+      productName: null,
+    });
+    const merged = attachCarriedDiscountLines(
+      { supplier: 'SUPPLIER', items: [item(), item()], warnings: [] },
+      [twice, { ...twice }],
+    );
+
+    // One printed discount, seen twice, applied once - not handed to the second case.
+    expect(merged.items[0]!.discount?.amount).toBe('7.00');
+    expect(merged.items[1]!.discount).toBeNull();
+    expect(merged.warnings).toEqual([]);
+  });
+
+  it('leaves a product that already has its discount alone', () => {
+    const merged = attachCarriedDiscountLines(
+      {
+        supplier: 'SUPPLIER',
+        items: [
+          item({ discount: { amount: '7.00', scope: DiscountScope.WHOLE_CASE, appliesToUnits: null } }),
+        ],
+        warnings: [],
+      },
+      [line({ appliesToIndex: null, productLineAbove: 'DRYNITE JUMBO #6 21CT', productName: null })],
+    );
+
+    expect(merged.items[0]!.discount?.amount).toBe('7.00');
+  });
+});
+
+describe('a barcode printed with the discount', () => {
+  const sixes = item({ upc: '0003700074565' });
+  const fives = item({
+    rawName: 'DRYNITE JUMBO #5 24CT',
+    canonicalName: 'DryNite Jumbo Size 5',
+    size: '24 CT',
+    upc: '0003700074572',
+  });
+
+  it('settles which size the money comes off', () => {
+    // The one thing on a receipt that identifies rather than describes: two sizes share every
+    // word of their name and nothing of their barcode.
+    const placed = associateDiscountLines(
+      [sixes, fives],
+      [line({ appliesToIndex: null, productName: 'DRYNITE JUMBO', upc: '0003700074572' })],
+    );
+
+    expect(placed.items[0]!.discount).toBeNull();
+    expect(placed.items[1]!.discount?.amount).toBe('7.00');
+  });
+
+  it('beats a position that says otherwise', () => {
+    const placed = associateDiscountLines(
+      [sixes, fives],
+      [line({ appliesToIndex: 0, productName: null, upc: '0003700074572' })],
+    );
+
+    expect(placed.items[1]!.discount?.amount).toBe('7.00');
+    expect(placed.items[0]!.discount).toBeNull();
+  });
+
+  it('is ignored when no product on the receipt carries it', () => {
+    const placed = associateDiscountLines(
+      [sixes, fives],
+      [line({ appliesToIndex: 1, productName: null, upc: '9999999999999' })],
+    );
+
+    // Falls back to what else the line has: a position, with nothing contradicting it.
+    expect(placed.items[1]!.discount?.amount).toBe('7.00');
+  });
+
+  it('does not take the same barcode twice', () => {
+    const placed = associateDiscountLines(
+      [sixes, sixes],
+      [
+        line({ appliesToIndex: null, productName: null, upc: '0003700074565' }),
+        line({ appliesToIndex: null, productName: null, upc: '0003700074565' }),
+      ],
+    );
+
+    // Two cases of one product, two printed lines: one each.
+    expect(placed.items.map((i) => i.discount?.amount)).toEqual(['7.00', '7.00']);
+  });
+});
+
+describe('the line printed above the discount', () => {
+  it('names the product when the discount line itself names nothing', () => {
+    // What the real receipt prints: FLYER DISCOUNT, a reference, the amount - and above it,
+    // the product. Copying that line is reading, not bookkeeping.
+    const placed = associateDiscountLines(
+      [other(), item()],
+      [
+        line({
+          appliesToIndex: null,
+          productName: null,
+          productLineAbove: 'DRYNITE JUMBO #6 21CT',
+        }),
+      ],
+    );
+
+    expect(placed.items[1]!.discount?.amount).toBe('7.00');
+    expect(placed.items[0]!.discount).toBeNull();
+  });
+
+  it('has to agree with a position, like any other name', () => {
+    const placed = associateDiscountLines(
+      [other(), item()],
+      [
+        line({
+          appliesToIndex: 0,
+          productName: null,
+          productLineAbove: 'DRYNITE JUMBO #6 21CT',
+        }),
+      ],
+    );
+
+    expect(placed.items.every((i) => i.discount === null)).toBe(true);
+    expect(placed.warnings[0]).toContain('names one product and points at another');
+  });
+
+  it('is preferred over nothing but never over the line\'s own name', () => {
+    const placed = associateDiscountLines(
+      [other(), item()],
+      [
+        line({
+          appliesToIndex: null,
+          productName: 'KETTLE CRISPS SEA SALT',
+          productLineAbove: 'DRYNITE JUMBO #6 21CT',
+        }),
+      ],
+    );
+
+    expect(placed.items[0]!.discount?.amount).toBe('7.00');
+    expect(placed.items[1]!.discount).toBeNull();
   });
 });

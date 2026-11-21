@@ -212,3 +212,29 @@ export function approvedPriceIsBelowCost(
   if (approvedPrice === null || trueUnitCost === null) return false;
   return approvedPrice.lessThan(trueUnitCost);
 }
+
+
+/**
+ * A discount's scope as the shopkeeper would say it.
+ *
+ * Never the stored name. "WHOLE_CASE" on a product card is the app talking to itself, and a
+ * shopkeeper reading it has to work out whether that means seven dollars off the case or seven
+ * off each of four - which are different costs. Lives here so the card, the chat and anything
+ * else that has to say it all say the same thing.
+ */
+export function discountScopeInWords(scope: DiscountScope): string {
+  switch (scope) {
+    case DiscountScope.WHOLE_CASE:
+      return 'off the whole case';
+    case DiscountScope.PER_UNIT:
+      return 'off each one';
+    case DiscountScope.UNITS_SUBSET:
+      return 'off some of the case';
+    case DiscountScope.CUSTOM:
+      return 'spread over the cases bought';
+    case DiscountScope.IGNORED:
+      return 'not for this product';
+    default:
+      return 'not yet applied - it does not say what it comes off';
+  }
+}

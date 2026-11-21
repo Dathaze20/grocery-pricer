@@ -7,7 +7,7 @@ import { visualSearchText } from '../core/ai-types';
 import type { AiProvider } from '../ai/provider';
 import type { Repository } from '../data/repository';
 import { MessageRole, type StoredItem, isIncomplete } from '../data/schema';
-import { DiscountScope, affectsCost } from '../core/models';
+import { affectsCost, discountScopeInWords } from '../core/models';
 import { toImagePart, type RawImage } from './images';
 
 export interface AskOptions {
@@ -184,7 +184,7 @@ function answerLocally(
               // What it comes off is half the answer. "A $7.00 discount was recorded" does not
               // tell the owner whether that is $7.00 off the case or $7.00 off each of four,
               // and those are different costs - so the scope is said in words, not as a code.
-              `${queryable.name}: ${amount.format()} ${scopeInWords(discount.scope)} was read from the receipt.`,
+              `${queryable.name}: ${amount.format()} ${discountScopeInWords(discount.scope)} was read from the receipt.`,
               affectsCost(discount.scope)
                 ? `It is in the ${queryable.unitCost?.format() ?? 'cost'} each.`
                 : 'It is not in the cost - the receipt does not say what it comes off, so it is waiting for you to say.',
@@ -475,27 +475,4 @@ export function toAnswer(item: QueryableItem): PriceAnswer {
     approvedRetail: item.approvedRetail,
     unitsPerCase: item.unitsPerCase,
   };
-}
-
-
-/**
- * A discount's scope as the shopkeeper would say it.
- *
- * Never the enum name. "WHOLE_CASE" in a sentence is the app talking to itself.
- */
-function scopeInWords(scope: DiscountScope): string {
-  switch (scope) {
-    case DiscountScope.WHOLE_CASE:
-      return 'off the whole case';
-    case DiscountScope.PER_UNIT:
-      return 'off each one';
-    case DiscountScope.UNITS_SUBSET:
-      return 'off some of the case';
-    case DiscountScope.CUSTOM:
-      return 'spread over the cases bought';
-    case DiscountScope.IGNORED:
-      return 'marked as not for this product';
-    default:
-      return 'with no scope established';
-  }
 }

@@ -359,6 +359,8 @@ function toDiscountLine(source: Json): AiDiscountLine {
   return {
     amount: str(source, 'amount'),
     productName: str(source, 'productName'),
+    productLineAbove: str(source, 'productLineAbove'),
+    upc: str(source, 'upc'),
     appliesToIndex: int(source, 'appliesToIndex'),
     reference: str(source, 'reference'),
     sourcePhotoIds: numList(source, 'sourcePhotoIds'),

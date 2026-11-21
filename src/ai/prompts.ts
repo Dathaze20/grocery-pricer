@@ -41,7 +41,7 @@ Return this JSON shape:
       "upc": string|null,
       "supplierSku": string|null,
       "casePrice": string|null,        // the printed case price, as text
-      "unitsPerCase": number|null,     // pieces inside one case, if printed
+      "unitsPerCase": number|null,     // RETAIL PACKAGES in the case - see below
       "printedUnitCost": string|null,  // only if the receipt itself prints one
       "casesPurchased": number|null,
       "discount": { "amount": string|null, "scope": string|null, "appliesToUnits": number|null }|null,
@@ -55,6 +55,8 @@ Return this JSON shape:
     {
       "amount": string|null,           // the money off, as printed, without the minus sign
       "productName": string|null,      // the product this line names, if it names one
+      "productLineAbove": string|null, // the product line printed above it, copied exactly
+      "upc": string|null,              // the barcode printed with that product, if you can see it
       "appliesToIndex": number|null,   // position in "items" above, counting from 0, if you can tell
       "reference": string|null,        // the flyer or promotion number printed with it
       "sourcePhotoIds": [number],
@@ -63,6 +65,13 @@ Return this JSON shape:
   ],
   "warnings": [string]
 }
+
+"unitsPerCase" IS HOW MANY THINGS THE SHOP CAN SELL OUT OF ONE CASE.
+It is the pack quantity printed beside the case price - on the line "45.99   4", it is the 4.
+It is NOT the number of pieces inside one package. A case of four 21-count packs of nappies is
+unitsPerCase 4, and "21 CT" belongs in "size". Reading 21 here would make each package look
+five times cheaper than it is. If the pack quantity is not printed, use null - never work it
+out from the size, and never divide anything.
 
 MONEY OFF IS NOT PRINTED BESIDE ITS PRODUCT.
 A wholesale receipt spreads one purchase over several lines, in this order:
@@ -84,6 +93,12 @@ flyer, discount, deal, allowance or promotion. Do this even when you are not sur
 it belongs to, and do it even when you have already filled in that product's "discount". A line
 listed twice costs nothing; a line left out cannot be recovered. Put the amount in as a positive
 number and the minus sign stays off it.
+
+For each money-off line, copy into "productLineAbove" the product line printed above it, exactly
+as it appears - for the example above that is "DRYNITE JUMBO #6 21CT". Copy the barcode printed
+with that product into "upc" if you can see it. These two are the most useful things you can
+give us, because they are printed text rather than a judgement: they say which product the money
+belongs to without anybody having to count lines.
 
 "appliesToIndex" is the position of the product in the "items" array you are returning, counting
 from 0 - not a line number on the paper. Give it only when the layout makes it plain, which is
