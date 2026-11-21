@@ -34,7 +34,8 @@ async function seed(
       supplierSku: null,
       category: row.category ?? Category.OTHER,
       casePrice: row.casePrice ?? Money.of('24.00').toStorage(),
-      unitsPerCase: row.unitsPerCase ?? 12,
+      // An explicit null is a pack count nobody established, not a missing override.
+      unitsPerCase: 'unitsPerCase' in row ? (row.unitsPerCase ?? null) : 12,
       casesPurchased: row.casesPurchased ?? 1,
       looseUnits: 0,
       discount: row.discount ?? null,
@@ -728,5 +729,229 @@ describe('asked about a discount, it answers about the discount', () => {
     expect(answer.text).toContain('$0.50');
     // Read, but not applied - and the difference has to be said out loud.
     expect(answer.text.toLowerCase()).toMatch(/not in the cost|not been applied|does not say/);
+  });
+});
+
+describe('asking about a product the way a shopkeeper actually asks', () => {
+  let repo: Repository;
+  beforeEach(async () => {
+    repo = await freshRepo();
+  });
+
+  /** The nappy case from the real order, with an invented name. */
+  async function nappies(over: Partial<StoredItem> = {}): Promise<number> {
+    const { orderId } = await seed(repo, [
+      {
+        displayName: 'DryNite Jumbo #6',
+        size: '21 CT',
+        casePrice: Money.of('45.99').toStorage(),
+        unitsPerCase: 4,
+        discount: {
+          description: 'Receipt discount',
+          amount: Money.of('7.00').toStorage(),
+          scope: DiscountScope.WHOLE_CASE,
+          appliesToUnits: null,
+        },
+        trueUnitCost: Money.of('9.7475').toStorage(),
+        totalWholesaleCost: Money.of('38.99').toStorage(),
+        suggestedPrice: Money.of('13.99').toStorage(),
+        ...over,
+      },
+    ]);
+    return orderId;
+  }
+
+  it('answers every part of a question that asks for five things', async () => {
+    const orderId = await nappies();
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'Did you automatically record the flyer discount for DryNite Jumbo #6 21CT? How much was the original case price, how much was the discount, what is my actual cost per package, and what selling price do you suggest?',
+    );
+
+    // The reply this replaces was "$9.75 each → $13.99 (suggested)" and nothing else.
+    expect(answer.text).toContain('$45.99');
+    expect(answer.text).toContain('$7.00');
+    expect(answer.text).toContain('$38.99');
+    expect(answer.text).toContain('$9.75');
+    expect(answer.text).toContain('$13.99');
+    expect(answer.text).toContain('The receipt shows');
+    // Every figure was already saved, so this costs the shop nothing.
+    expect(answer.usedAi).toBe(false);
+  });
+
+  it('explains it in sentences rather than listing fields', async () => {
+    const orderId = await nappies();
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'give me the full breakdown for drynite jumbo');
+
+    expect(answer.text).toContain('a case');
+    expect(answer.text).toContain('There are 4 units in the case');
+    expect(answer.text).toContain('leaving $16.97 gross profit on the case');
+    // No database words.
+    expect(answer.text).not.toContain('unitsPerCase');
+    expect(answer.text).not.toContain('trueUnitCost');
+    expect(answer.text).not.toContain('WHOLE_CASE');
+  });
+
+  it('carries the figures for the screen to lay out', async () => {
+    const orderId = await nappies();
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'full breakdown for drynite jumbo');
+
+    const rows = answer.breakdowns![0]!;
+    expect(rows.name).toBe('DryNite Jumbo #6 21 CT');
+    expect(rows.netCase!.format()).toBe('$38.99');
+    expect(rows.profitPerCase!.format()).toBe('$16.97');
+  });
+
+  it('keeps a plain question plain', async () => {
+    const orderId = await nappies();
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'how much is the drynite jumbo');
+
+    // One figure asked for, one short answer - not a case breakdown.
+    expect(answer.text.split('\n').length).toBeLessThanOrEqual(3);
+    expect(answer.breakdowns).toBeUndefined();
+  });
+
+  it('says a hand-entered discount was entered, not read', async () => {
+    const orderId = await nappies({
+      discount: {
+        description: 'Entered from the receipt',
+        amount: Money.of('7.00').toStorage(),
+        scope: DiscountScope.WHOLE_CASE,
+        appliesToUnits: null,
+      },
+    });
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'what was the discount and the cost each for drynite jumbo',
+    );
+
+    expect(answer.text).toContain('You entered $7.00');
+    expect(answer.text).not.toContain('The receipt shows');
+  });
+
+  it('will not confirm a discount it never read, even while answering the rest', async () => {
+    const orderId = await nappies({ discount: null, trueUnitCost: Money.of('11.4975').toStorage() });
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'what is my cost each for drynite jumbo and did you record the $7.00 flyer discount',
+    );
+
+    expect(answer.text).toContain('No discount was recorded');
+    expect(answer.text).toContain('cannot confirm an amount I did not read');
+    expect(answer.text).toContain('$11.50');
+  });
+
+  it('says what is still missing instead of working round it', async () => {
+    const { orderId } = await seed(repo, [
+      {
+        displayName: 'Air Fresh Spring',
+        size: '8.1 OZ',
+        casePrice: Money.of('9.89').toStorage(),
+        unitsPerCase: null,
+        discount: {
+          description: 'Receipt discount',
+          amount: Money.of('0.50').toStorage(),
+          scope: DiscountScope.WHOLE_CASE,
+          appliesToUnits: null,
+        },
+        trueUnitCost: null,
+        totalWholesaleCost: null,
+        suggestedPrice: null,
+      },
+    ]);
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'full breakdown for air fresh spring',
+    );
+
+    // The case figure the receipt gives, and an honest gap where the count should be.
+    expect(answer.text).toContain('$9.39');
+    expect(answer.text).toContain('how many sellable units are in the case');
+    expect(answer.text).not.toContain('$2.35');
+  });
+
+  it('answers two products separately, without mixing their figures', async () => {
+    const { orderId } = await seed(repo, [
+      {
+        displayName: 'DryNite Jumbo #6',
+        size: '21 CT',
+        casePrice: Money.of('45.99').toStorage(),
+        unitsPerCase: 4,
+        trueUnitCost: Money.of('9.7475').toStorage(),
+        suggestedPrice: Money.of('13.99').toStorage(),
+      },
+      {
+        displayName: 'Hound Dinner Filet',
+        size: '2.7 LB',
+        casePrice: Money.of('29.39').toStorage(),
+        unitsPerCase: 4,
+        trueUnitCost: Money.of('6.9975').toStorage(),
+        suggestedPrice: Money.of('10.99').toStorage(),
+      },
+    ]);
+
+    const answer = await ask(
+      repo,
+      new FakeAiProvider(),
+      orderId,
+      'what do the drynite jumbo and the hound dinner filet cost each and what should I sell them for',
+    );
+
+    // Either both are described, or the app asks which - never one product's cost against the
+    // other's name.
+    const bothNamed = answer.text.includes('DryNite') && answer.text.includes('Hound');
+    expect(bothNamed || answer.text.includes('Which one')).toBe(true);
+    if (bothNamed) {
+      expect(answer.text).toContain('$9.75');
+      expect(answer.text).toContain('$7.00');
+    }
+  });
+
+  it('says a size once', async () => {
+    const orderId = await nappies({ displayName: 'DryNite Jumbo Diapers #6 21 ct' });
+
+    const answer = await ask(repo, new FakeAiProvider(), orderId, 'full breakdown for drynite jumbo');
+
+    expect(answer.text).toContain('DryNite Jumbo Diapers #6 21 ct');
+    expect(answer.text).not.toMatch(/21 ct 21 CT/i);
+  });
+
+  it('keeps the figures when the order is read back later', async () => {
+    const orderId = await nappies();
+    await ask(repo, new FakeAiProvider(), orderId, 'full breakdown for drynite jumbo');
+
+    const saved = await repo.conversation(orderId);
+    const reply = saved.find((message) => message.role === MessageRole.APP);
+
+    // The block survives a reload, and so does the text that says the same thing.
+    expect(reply!.breakdowns![0]!.title).toBe('DryNite Jumbo #6 21 CT');
+    expect(reply!.breakdowns![0]!.rows.some((r) => r.value === '−$7.00' && r.tone === 'off')).toBe(true);
+    expect(reply!.text).toContain('$38.99');
+  });
+
+  it('leaves an older message without figures exactly as it was', async () => {
+    const orderId = await nappies();
+    await repo.say(orderId, MessageRole.APP, 'An answer from before any of this existed.');
+
+    const saved = await repo.conversation(orderId);
+    const old = saved.find((m) => m.text.startsWith('An answer from before'));
+
+    expect(old!.breakdowns).toBeUndefined();
+    expect(old!.text).toBe('An answer from before any of this existed.');
   });
 });

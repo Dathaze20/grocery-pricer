@@ -198,3 +198,27 @@ export function upcEquivalent(a: string | null | undefined, b: string | null | u
 function trimTrailingZeros(value: number): string {
   return String(Number(value.toFixed(3)));
 }
+
+/**
+ * The product name with its size said once.
+ *
+ * "Pampers Jumbo Diapers #5 24 ct" and a size of "24 CT" were being joined into "...24 ct 24
+ * CT". The size is worth adding when the name does not already carry it, and never otherwise.
+ *
+ * Compared on the printed text rather than the normalised form, because normalising a size
+ * strips it to nothing - and matched on whole tokens, so that a "1 CT" size is not swallowed by
+ * the "21CT" already in the name.
+ */
+export function nameWithSize(displayName: string, size: string | null): string {
+  const name = displayName.trim();
+  const sized = (size ?? '').trim();
+  if (sized.length === 0) return name;
+
+  const tokens = sized.toUpperCase().match(/[A-Z0-9.]+/g) ?? [];
+  if (tokens.length === 0) return name;
+
+  const escaped = tokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const run = `(?:${escaped.join('')}|${escaped.join('\\s*')})`;
+  const alreadyThere = new RegExp(`(^|[^A-Z0-9])${run}([^A-Z0-9]|$)`).test(name.toUpperCase());
+  return alreadyThere ? name : `${name} ${sized}`;
+}

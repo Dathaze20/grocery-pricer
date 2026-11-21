@@ -478,14 +478,28 @@ button:disabled { cursor: default; }
   color: #fff;
 }
 
-.composer {
+/*
+ * The label and the box travel together.
+ *
+ * The composer pins itself to the bottom of the screen; a label placed before it in the markup
+ * simply scrolled away with the conversation and ended up printed underneath the box it was
+ * supposed to name. Both now sit in one pinned dock, so what the box is for stays with the box
+ * - including when the Android keyboard pushes the viewport up.
+ */
+.composer-dock {
   position: sticky;
   bottom: 0;
+  margin-top: auto;
+  padding: var(--sp-2) 0 calc(var(--sp-3) + env(safe-area-inset-bottom));
+  /* Solid, not a fade: the label sits in this strip, and a conversation showing through the
+     words naming the box is worse than a hard edge. The shadow does the lifting instead. */
+  background: var(--paper);
+  box-shadow: 0 -10px 14px -10px rgba(22, 25, 28, 0.18);
+}
+
+.composer {
   display: flex;
   gap: var(--sp-2);
-  margin-top: auto;
-  padding: var(--sp-3) 0 calc(var(--sp-3) + env(safe-area-inset-bottom));
-  background: linear-gradient(to bottom, rgba(247, 246, 242, 0), var(--paper) 26%);
 }
 
 .composer input[type='text'] {
@@ -911,3 +925,95 @@ button.notice { display: block; width: 100%; font: inherit; font-size: 0.9375rem
 .btn-remove:active { background: var(--money-off-bg); }
 
 .t-cap.is-warn { color: var(--warn); font-weight: 650; }
+
+/* --- figures inside a chat answer --------------------------------------- */
+
+/*
+ * The same block as the product card, sized for a bubble.
+ *
+ * A chat reply reading "$9.75 each → $13.99" answered one of five questions and looked like a
+ * database lookup. The figures now sit in a block that can be scanned, with the sentences that
+ * explain them underneath - and the block borrows the card's layout so the two screens look
+ * like one app rather than two.
+ */
+.chat-money {
+  margin: 0 0 var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.chat-money-title {
+  margin: 0;
+  font-weight: 700;
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
+.chat-money .money { padding: var(--sp-2) var(--sp-3); }
+
+/* Money the shop keeps. */
+.money .money-keep dt { color: var(--ink-2); }
+.money .money-keep dd { color: var(--brand); font-weight: 750; }
+
+/* Something nobody has established yet - said in words as well as in amber. */
+.money .money-warn dt,
+.money .money-warn dd { color: var(--warn); }
+.money .money-warn dd { font-weight: 650; }
+
+.chat-money-note {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--warn-bg);
+  border: 1px solid #efdfb3;
+  border-radius: var(--r-md);
+  color: var(--warn);
+  font-size: 0.875rem;
+}
+
+/* --- the question box, and what sits beside it --------------------------- */
+
+/*
+ * The label belongs to the box, and the delivery check belongs beside it.
+ *
+ * A full-width secondary button directly above the composer read as the main action on the
+ * screen, and the input under it looked like part of it. The label now names what the box is
+ * for; the delivery check is a quiet line on the same row, still one tap away.
+ */
+.composer-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-1) var(--sp-1);
+}
+
+.composer-label label {
+  font-size: 0.8125rem;
+  font-weight: 650;
+  color: var(--ink-2);
+}
+
+.link-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  background: none;
+  border: 0;
+  padding: var(--sp-2);
+  margin: calc(var(--sp-2) * -1) calc(var(--sp-2) * -1) calc(var(--sp-2) * -1) 0;
+  color: var(--brand);
+  font-size: 0.8125rem;
+  font-weight: 650;
+  text-decoration: underline;
+  white-space: nowrap;
+  /* Still a 44px target despite looking like a link. */
+  min-height: 44px;
+}
+
+/* A note the owner still has to do something about, marked as one. */
+.note.warn-note {
+  background: var(--warn-bg);
+  border-color: #efdfb3;
+  color: var(--warn);
+}

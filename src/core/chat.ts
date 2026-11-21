@@ -1,6 +1,6 @@
 import { Money } from './money';
 import { ProfitCalculator } from './cost';
-import { unitFromToken } from './matching';
+import { nameWithSize, unitFromToken } from './matching';
 import type { QueryRequest } from './query';
 
 /** Which product a correction is aimed at. Resolved against the conversation, never guessed. */
@@ -18,6 +18,14 @@ export type ChatIntent =
   | { kind: 'lastCharged'; request: QueryRequest }
   /** "did you record the flyer discount on the Cesar?" - about the receipt, not the price. */
   | { kind: 'discountQuery'; request: QueryRequest }
+  /**
+   * A question that wants the whole picture, not one figure.
+   *
+   * "Did you record the flyer discount? What was the case price, what does each one cost me,
+   * and what should I sell it for?" is one question in a shopkeeper's head and four in a
+   * parser's. Answering the first and dropping the rest is what made the chat feel mechanical.
+   */
+  | { kind: 'productSummary'; requests: readonly QueryRequest[]; topics: readonly string[] }
   | { kind: 'costUnder'; limit: Money }
   | { kind: 'costOver'; limit: Money }
   | { kind: 'correction'; targets: CorrectionTarget[] }
@@ -91,11 +99,13 @@ export function parseChatIntent(raw: string): ChatIntent {
     parseDeliveryCheck(lower) ??
     parseCostFilter(lower) ??
     parseProfit(lower) ??
+    parseProductSummary(lower) ??
     parseCaseQuantity(lower) ??
     parseDiscountQuery(lower) ??
     parseLastCharged(lower) ??
     parseOrderSummary(lower) ??
-    parsePriceLookup(lower) ?? { kind: 'unknown' }
+    parsePriceLookup(lower) ??
+    parseFigureFallback(lower) ?? { kind: 'unknown' }
   );
 }
 
@@ -339,7 +349,9 @@ export interface PriceAnswer {
 const ARROW = ' → ';
 
 export function answerTitle(answer: PriceAnswer): string {
-  return [answer.displayName.trim(), answer.size?.trim()].filter((p) => p !== undefined && p.length > 0).join(' ');
+  // The size is added when the name does not already carry it, and never otherwise: a product
+  // read as "Pampers Jumbo Diapers #5 24 ct" was being titled "... 24 ct 24 CT".
+  return nameWithSize(answer.displayName, answer.size ?? null);
 }
 
 /** What the shelf price is: what they set, else what was worked out. */
@@ -512,4 +524,119 @@ function parseDiscountQuery(lower: string): ChatIntent | null {
     .trim();
   const phrase = productPhrase(stripFillers(candidate));
   return phrase === null ? null : { kind: 'discountQuery', request: { phrase } };
+}
+
+
+/**
+ * The figures a question is asking about.
+ *
+ * Each entry is one thing a shopkeeper can want to know. They are counted rather than ranked:
+ * a question that touches two of them is a question about the product, and deserves the whole
+ * picture rather than whichever one the parser happened to check first.
+ */
+const FIGURE_TOPICS: ReadonlyArray<readonly [string, RegExp]> = [
+  ['discount', /\b(discount|discounts|flyer|deal|rebate|allowance|money off|taken off)\b/],
+  ['caseCost', /\b(case price|case cost|cost of the case|whole case|wholesale|pay for|paid for|original)\b/],
+  ['unitCost', /\b(costs?|actual cost|unit cost|each one cost)\b/],
+  ['units', /\b(how many|per case|in the case|in a case|case quantity|pack count|packages|bottles|units)\b/],
+  ['retail', /\b(sell|selling|charge|retail|shelf price|price should|should we price)\b/],
+  ['profit', /\b(profit|margin|markup|make on|making on|earn)\b/],
+];
+
+/**
+ * Which figures a question touches.
+ *
+ * "Case price" and "case cost" are the case topic, and the bare word "cost" is the cost-each
+ * topic - so the case wording is taken out before looking for the bare word, or "what is the
+ * case price" would count as two questions and get a breakdown it did not ask for.
+ */
+function matchedTopics(lower: string): string[] {
+  const withoutCaseWords = lower.replace(/\b(case\s+(price|cost)|cost\s+of\s+the\s+case)\b/g, ' ');
+  return FIGURE_TOPICS.filter(([name, pattern]) =>
+    pattern.test(name === 'unitCost' ? withoutCaseWords : lower),
+  ).map(([name]) => name);
+}
+
+/** Phrases that ask for everything outright. */
+const WHOLE_PICTURE = /\b(full breakdown|whole breakdown|breakdown|everything|all the numbers|complete picture|full picture|the lot)\b/;
+
+/** Words that belong to the asking, not to the product being asked about. */
+const SUMMARY_NOISE =
+  /\b(did|do|does|you|your|i|my|me|we|us|our|it|its|they|them|their|this|that|these|those|should|shall|would|could|can|will|now|here|get|got|take|takes|automatically|automatic|record|recorded|read|have|has|was|were|is|are|there|any|a|an|the|for|on|of|about|check|saved|receipt|receipts|if|missing|tell|what|which|whats|how|much|many|give|show|please|and|or|but|also|then|per|each|one|ones|actual|original|net|gross|total|price|prices|pricing|cost|costs|sell|selling|suggest|suggested|charge|retail|profit|margin|markup|discount|discounts|flyer|deal|rebate|allowance|case|cases|pack|packs|package|packages|unit|units|bottle|bottles|quantity|count|breakdown|everything|complete|full|picture|numbers|lot|buy|bought|paid|pay|make|making|earn)\b/g;
+
+/**
+ * A question about a product that wants more than one number back.
+ *
+ * Deliberately not greedy. One figure asked for plainly keeps its own short answer - "how much
+ * is the mayonnaise" should not produce a case breakdown - and a question with an explicit
+ * selling price in it is a profit-at-that-price question, which is answered earlier. Profit on
+ * its own is the exception: there is no honest way to say what a case earns without the cost,
+ * the pack count and the price, so it brings the whole picture with it.
+ */
+function parseProductSummary(lower: string): ChatIntent | null {
+  const matched = matchedTopics(lower);
+  const wantsEverything = WHOLE_PICTURE.test(lower);
+  const profitAlone = matched.length === 1 && matched[0] === 'profit';
+  if (!wantsEverything && matched.length < 2 && !profitAlone) return null;
+
+  /*
+   * One question, possibly about two products.
+   *
+   * Split only on "and", and only before the noise is stripped: commas are how a shopkeeper
+   * writes "Pampers Jumbo Size 6, 21CT", so splitting on those would turn one product into
+   * two and answer about whichever each half happened to match.
+   */
+  const phrases = lower
+    .split(/\s+and\s+/)
+    .map(productPhraseIn)
+    .filter((phrase): phrase is string => phrase !== null);
+
+  const unique = [...new Set(phrases)];
+  if (unique.length === 0) return null;
+  return {
+    kind: 'productSummary',
+    requests: unique.map((phrase) => ({ phrase })),
+    topics: matched,
+  };
+}
+
+/** The product named in one clause, with everything about the asking taken out. */
+function productPhraseIn(clause: string): string | null {
+  const candidate = clause
+    .replace(/\$\s*\d[\d.,]*/g, ' ')
+    // A bare decimal with a unit after it is a size, not an amount: "2.7 lb" names the product.
+    .replace(/\b\d+\.\d{1,2}\b\s*([a-z]+)?/g, (match, trailing: string | undefined) =>
+      trailing !== undefined && unitFromToken(trailing) !== null ? match : ' ',
+    )
+    .replace(SUMMARY_NOISE, ' ')
+    .replace(/[?!,]/g, ' ')
+    .replace(/\.(?!\d)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return productPhrase(stripFillers(candidate));
+}
+
+
+/**
+ * One plain figure, asked in a way no opener matches.
+ *
+ * "What should we sell the Cesar for?" asks for a price and names a product, and was falling
+ * through to "I did not understand that" because it opens with neither "how much" nor a
+ * product name. One figure wanted is still a short answer, so it goes to the ordinary price
+ * lookup rather than the whole picture.
+ */
+function parseFigureFallback(lower: string): ChatIntent | null {
+  if (matchedTopics(lower).length === 0) return null;
+
+  const candidate = lower
+    .replace(/\$\s*\d[\d.,]*/g, ' ')
+    .replace(SUMMARY_NOISE, ' ')
+    .replace(/[?!,]/g, ' ')
+    .replace(/\.(?!\d)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const phrase = productPhrase(stripFillers(candidate));
+  return phrase === null ? null : { kind: 'priceLookup', request: { phrase } };
 }
