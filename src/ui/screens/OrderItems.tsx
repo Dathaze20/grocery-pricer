@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Money } from '../../core/money';
 import { ItemConfidence } from '../../core/models';
 import { NameNormalizer } from '../../core/matching';
-import { CostCalculator } from '../../core/cost';
-import { DiscountScope, affectsCost, discountScopeInWords, makeDiscount } from '../../core/models';
+import { netCaseCost as caseCostAfterDiscount } from '../../core/breakdown';
+import { DiscountScope, affectsCost, discountScopeInWords } from '../../core/models';
 import { caseEconomics, priceForTargetProfit, stepProfitTarget } from '../../core/profit';
 import { APPROVED_PRICE_BELOW_COST } from '../../app/processing';
 import type { Repository } from '../../data/repository';
@@ -446,16 +446,17 @@ function ItemRow(props: {
           {needsUnits && (
             <div className="notice warn">
               <p style={{ marginTop: 0 }}>
-                The receipt does not say how many are in this pack, so there is no cost each.
-                Count them and put the number in - nothing here will guess it.
+                The receipt does not say how many of these the case holds to sell, so there is
+                no cost each. Count the sellable packs or bottles in the case and put that
+                number in - nothing here will guess it.
               </p>
               <div className="row">
                 <input
                   type="text"
                   inputMode="numeric"
                   className="grow"
-                  placeholder="pieces per pack"
-                  aria-label={`Pieces per pack for ${item.displayName}`}
+                  placeholder="e.g. 4 in the case"
+                  aria-label={`Sellable units in the case for ${item.displayName}`}
                   value={unitsText}
                   onChange={(event) => setUnitsText(event.target.value)}
                 />
@@ -523,7 +524,7 @@ function ItemRow(props: {
                   type="text"
                   inputMode="decimal"
                   className="grow"
-                  placeholder="7.00"
+                  placeholder="e.g. 7.00"
                   aria-label={`Printed discount for ${item.displayName}`}
                   value={discountText}
                   onChange={(event) => setDiscountText(event.target.value)}
@@ -653,25 +654,21 @@ function TargetReadout(props: {
 
 /** The net cost of one case, from the same engine that priced the order. */
 function netCaseCostOf(item: StoredItem): Money | null {
-  if (item.casePrice === null || item.unitsPerCase === null || item.unitsPerCase <= 0) return null;
-  const casePrice = Money.fromStorage(item.casePrice);
-  const discount =
-    item.discount === null
-      ? null
-      : makeDiscount(
-          item.discount.description,
-          Money.fromStorage(item.discount.amount),
-          item.discount.scope as DiscountScope,
-          item.discount.appliesToUnits,
-        );
-
-  return CostCalculator.calculate({
-    casePrice,
-    unitsPerCase: item.unitsPerCase,
-    casesPurchased: Math.max(item.casesPurchased, 1),
-    looseUnits: item.looseUnits,
-    discount,
-  }).netCaseCost;
+  /*
+   * What the case cost after verified money off it, pack count or no pack count.
+   *
+   * This used to require the number of sellable units and returned nothing without it, so a
+   * Febreze case showing "$9.89" and "-$0.50" printed a dash where $9.39 belongs - a figure
+   * the receipt states outright, shown as unknown. Taking a fixed amount off a case does not
+   * depend on how many bottles are inside it. A per-unit discount genuinely does, and that one
+   * still returns nothing rather than guessing.
+   */
+  return caseCostAfterDiscount(
+    item.casePrice === null ? null : Money.fromStorage(item.casePrice),
+    item.discount,
+    item.unitsPerCase,
+    item.casesPurchased,
+  );
 }
 
 function profitTone(profit: Money | null): string {

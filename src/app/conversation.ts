@@ -8,6 +8,13 @@ import type { AiProvider } from '../ai/provider';
 import type { Repository } from '../data/repository';
 import { MessageRole, type StoredItem, isIncomplete } from '../data/schema';
 import { affectsCost, discountScopeInWords } from '../core/models';
+import {
+  breakdownOf,
+  breakdownRows,
+  breakdownSentences,
+  type PricingBreakdown,
+} from '../core/breakdown';
+import { nameWithSize } from '../core/matching';
 import { toImagePart, type RawImage } from './images';
 
 export interface AskOptions {
@@ -28,6 +35,14 @@ export interface AskOptions {
 export interface Answer {
   readonly text: string;
   readonly itemIds: readonly number[];
+  /**
+   * The figures behind the sentences, for the chat to lay out.
+   *
+   * The text is always complete on its own - it is what is stored, what is read back after a
+   * reload, and what anybody sees if the block does not render. This is the same figures in a
+   * shape the screen can colour, never extra information that only exists in the layout.
+   */
+  readonly breakdowns?: readonly PricingBreakdown[];
   /** True when a Gemini call was actually made to produce this. */
   readonly usedAi: boolean;
   /**
@@ -82,7 +97,12 @@ export async function ask(
       ? { ...resolved, text: `${resolved.text}${absenceCaveat(true)}` }
       : resolved;
 
-  await repo.say(orderId, MessageRole.APP, answer.text, { referencedItemIds: [...answer.itemIds] });
+  await repo.say(orderId, MessageRole.APP, answer.text, {
+    referencedItemIds: [...answer.itemIds],
+    ...(answer.breakdowns !== undefined
+      ? { breakdowns: answer.breakdowns.map(breakdownRows) }
+      : {}),
+  });
   return answer;
 }
 
@@ -150,6 +170,49 @@ function answerLocally(
     case 'lastCharged': {
       const outcome = engine.resolve(intent.request);
       return fromOutcome(outcome, (items) => ChatAnswerFormatter.numbered(items.map(toAnswer)));
+    }
+
+    /*
+     * The whole picture, because the whole picture was asked for.
+     *
+     * Built from the saved rows and nothing else: every figure here was worked out when the
+     * receipt was read, so no call is made and no amount is invented. Several products named
+     * in one question get one breakdown each, never one set of figures with the names mixed.
+     */
+    case 'productSummary': {
+      // Each product named gets its own figures. Two products' numbers are never averaged,
+      // mixed, or attached to the other's name.
+      const outcomes = intent.requests.map((request) => engine.resolve(request));
+      const matched: StoredItem[] = [];
+      for (const outcome of outcomes) {
+        for (const row of itemsFromOutcome(outcome, stored)) {
+          if (!matched.some((seen) => seen.id === row.id)) matched.push(row);
+        }
+      }
+      if (matched.length === 0) return fromOutcome(outcomes[0]!, () => '');
+
+      const breakdowns = matched.map(breakdownOf);
+      /*
+       * A figure the shopkeeper quoted is their recollection, not evidence.
+       *
+       * Asked "did you record the $1.40 flyer discount, and what does it cost me", the honest
+       * answer to the first half is that nothing was read - and it has to say so, rather than
+       * answering the second half and letting silence stand for yes.
+       */
+      const askedAboutDiscount = intent.topics.includes('discount');
+      const sentences = breakdowns.map((breakdown) => {
+        const text = breakdownSentences(breakdown);
+        return askedAboutDiscount && breakdown.discount === null
+          ? `${text}\nI cannot confirm an amount I did not read.`
+          : text;
+      });
+
+      return {
+        text: sentences.join('\n\n'),
+        itemIds: breakdowns.map((breakdown) => breakdown.itemId),
+        usedAi: false,
+        breakdowns,
+      };
     }
 
     case 'discountQuery': {
@@ -243,6 +306,28 @@ function answerLocally(
   }
 }
 
+/**
+ * The stored rows an outcome settled on, or none when it did not settle.
+ *
+ * Ambiguous and none deliberately give nothing back: a question naming two products answers
+ * about both, but a question that could mean either of two is asked which, never answered
+ * about whichever sorted first.
+ */
+function itemsFromOutcome(
+  outcome: ReturnType<OrderQueryEngine['resolve']>,
+  stored: readonly StoredItem[],
+): StoredItem[] {
+  const ids =
+    outcome.kind === 'exact'
+      ? [outcome.item.id]
+      : outcome.kind === 'several'
+        ? outcome.items.map((item) => item.id)
+        : [];
+  return ids
+    .map((id) => stored.find((row) => row.id === id))
+    .filter((row): row is StoredItem => row !== undefined);
+}
+
 function fromOutcome(
   outcome: ReturnType<OrderQueryEngine['resolve']>,
   format: (items: QueryableItem[]) => string,
@@ -257,7 +342,7 @@ function fromOutcome(
         text:
           'Which one do you mean?\n' +
           outcome.candidates
-            .map((item, index) => `${index + 1}. ${item.name}${item.size !== null ? ` ${item.size}` : ''}`)
+            .map((item, index) => `${index + 1}. ${nameWithSize(item.name, item.size)}`)
             .join('\n'),
         itemIds: outcome.candidates.map((i) => i.id),
         usedAi: false,

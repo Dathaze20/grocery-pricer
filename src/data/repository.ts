@@ -6,8 +6,9 @@ import { CostCalculator } from '../core/cost';
 import { PricingEngine, defaultPricingRules, type PricingRules } from '../core/pricing';
 import { openGroceryDb, type GroceryDb } from './db';
 
-/** How a discount the owner typed in is described, so a card can say where it came from. */
-export const ENTERED_BY_HAND = 'Entered from the receipt';
+export { ENTERED_BY_HAND };
+
+import { ENTERED_BY_HAND } from '../core/breakdown';
 import {
   DB_NAME,
   MessageRole,
@@ -15,6 +16,7 @@ import {
   SettingKey,
   type StoredDeliveryCheck,
   type StoredItem,
+  type StoredBreakdown,
   type StoredMessage,
   type StoredOrder,
   type StoredPhoto,
@@ -693,7 +695,11 @@ export class Repository {
     orderId: number,
     role: MessageRole,
     text: string,
-    options: { photoId?: number | null; referencedItemIds?: number[] } = {},
+    options: {
+      photoId?: number | null;
+      referencedItemIds?: number[];
+      breakdowns?: readonly StoredBreakdown[];
+    } = {},
   ): Promise<StoredMessage> {
     return this.addMessage({
       orderId,
@@ -701,6 +707,11 @@ export class Repository {
       text,
       photoId: options.photoId ?? null,
       referencedItemIds: options.referencedItemIds ?? [],
+      // Left off the record entirely when there are none, so nothing already stored changes
+      // shape and an older build reading this row sees exactly what it saw before.
+      ...(options.breakdowns !== undefined && options.breakdowns.length > 0
+        ? { breakdowns: options.breakdowns.map((breakdown) => ({ ...breakdown })) }
+        : {}),
       createdAt: Date.now(),
     });
   }

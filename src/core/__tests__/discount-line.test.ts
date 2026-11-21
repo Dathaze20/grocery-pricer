@@ -49,7 +49,18 @@ describe('asking about a discount is not asking about a price', () => {
     const intent = parseChatIntent(
       'What is my actual cost for Cesar Filet Mignon 2.7 lb? Did you record a $1.40 flyer discount? Check my saved receipt information. If the discount is missing, tell me.',
     );
-    expect(intent.kind).toBe('discountQuery');
+
+    /*
+     * Two questions in one sentence, so both are answered.
+     *
+     * This used to be read as a discount question alone, which answered the second half and
+     * left the first. It is a question about a product - what it cost and what came off it -
+     * and the whole picture covers both. The safeguard the discount answer carried comes with
+     * it: a figure quoted in the chat is still never confirmed as something that was read.
+     */
+    expect(intent.kind).toBe('productSummary');
+    expect(intent.kind === 'productSummary' ? intent.topics : []).toContain('discount');
+    expect(intent.kind === 'productSummary' ? intent.topics : []).toContain('unitCost');
   });
 
   it('recognises the shorter ways of asking', () => {

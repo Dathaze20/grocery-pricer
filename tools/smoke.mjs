@@ -232,7 +232,7 @@ async function main() {
     check('and says what it is doing while it reads', sawProgress);
     check(
       'with the question box usable while it reads',
-      await page.isEnabled('input[placeholder*="Ask about"]'),
+      await page.isEnabled('#ask'),
     );
 
     // Asked while the receipt is still being read. It must be kept, not answered from nothing.

@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { OrderImageType } from '../../core/ai-types';
 import { ask } from '../../app/conversation';
+import { sortWarnings } from '../../core/warnings';
 import { readFile } from '../../app/images';
 import type { Repository } from '../../data/repository';
-import { MessageRole, type StoredMessage, type StoredOrder, isIncomplete } from '../../data/schema';
+import {
+  MessageRole,
+  type StoredBreakdown,
+  type StoredBreakdownRow,
+  type StoredMessage,
+  type StoredOrder,
+  isIncomplete,
+} from '../../data/schema';
 import type { Screen } from '../App';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { TopBar } from '../components/TopBar';
@@ -71,6 +79,8 @@ export function OrderChat(props: {
    * finished, which is the quietest way for a wrong total to be trusted.
    */
   const incomplete = !reading && order !== null && isIncomplete(order);
+  // Sorted once per render rather than inside the list, so the three groups agree.
+  const warnings = sortWarnings(order?.warnings ?? []);
 
   // The oldest question that failed. Only one is ever shown: the queue stalls on it, so
   // pressing the button is what moves everything behind it.
@@ -255,6 +265,17 @@ export function OrderChat(props: {
               key={message.id}
               className={`bubble ${message.role === MessageRole.USER ? 'mine' : 'reply'}`}
             >
+              {/*
+                * The figures first, then the explanation.
+                *
+                * Both say the same thing on purpose: the block is for finding one number at a
+                * glance over a receipt, the sentences are for understanding it - and the
+                * sentences are what is stored, so an answer read back on a build that never
+                * knew about blocks is still a whole answer.
+                */}
+              {message.breakdowns?.map((breakdown, index) => (
+                <BreakdownBlock key={`${message.id}-${index}`} breakdown={breakdown} />
+              ))}
               {message.text}
             </div>
           ))}
@@ -335,20 +356,34 @@ export function OrderChat(props: {
           <div ref={bottom} />
         </div>
 
-        <button
-          type="button"
-          className="btn btn-secondary btn-block"
-          onClick={() => go({ kind: 'delivery', orderId })}
-        >
-          <TruckIcon size={20} />
-          Check a delivery
-        </button>
+        {/*
+          * Asking a question is what this screen is for.
+          *
+          * A full-width "Check a delivery" sat directly above the question box and outweighed
+          * it, so the one thing the app exists to do was the second thing on the screen - and
+          * the box under it read as part of the button. Checking a delivery is still here, one
+          * tap away, as a quiet line rather than the loudest control.
+          */}
+        <div className="composer-dock">
+        <div className="composer-label">
+          <label htmlFor="ask">Ask about prices, discounts or profits</label>
+          <button
+            type="button"
+            className="link-action"
+            onClick={() => go({ kind: 'delivery', orderId })}
+          >
+            <TruckIcon size={16} />
+            Check a delivery
+          </button>
+        </div>
 
         <div className="composer">
           <input
+            id="ask"
             type="text"
             value={text}
-            placeholder={dictation.listening ? 'Listening…' : 'Ask about this order…'}
+            aria-label="Ask about prices, discounts or profits"
+            placeholder={dictation.listening ? 'Listening…' : 'Type your question…'}
             enterKeyHint="send"
             disabled={busy}
             onChange={(event) => setText(event.target.value)}
@@ -379,6 +414,7 @@ export function OrderChat(props: {
             <SendIcon size={20} />
           </button>
         </div>
+        </div>
         {dictation.error !== null && <p className="notice warn">{dictation.error}</p>}
 
         {order !== null && order.warnings.length > 0 && (
@@ -393,16 +429,46 @@ export function OrderChat(props: {
            * Read straight from the saved order, so it works for receipts processed long ago
            * without re-reading anything.
            */
-          <details className="note">
-            <summary>
-              What could not be read ({order.warnings.length})
-            </summary>
-            <ul>
-              {order.warnings.map((warning, index) => (
-                <li key={`${index}-${warning}`}>{warning}</li>
-              ))}
-            </ul>
-          </details>
+          <>
+            {/*
+              * Three different things, told apart.
+              *
+              * An order came back with two dozen notes, most of them saying a discount was
+              * listed twice and counted once - the app working - all filed under "What could
+              * not be read", with the ones that mattered buried among them. What needs the
+              * owner now is open; what was handled is one line they can unfold if curious.
+              */}
+            {warnings.unread.length > 0 && (
+              <details className="note warn-note" open>
+                <summary>Photos or details not read ({warnings.unread.length})</summary>
+                <ul>
+                  {warnings.unread.map((warning, index) => (
+                    <li key={`unread-${index}`}>{warning}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {warnings.review.length > 0 && (
+              <details className="note warn-note" open>
+                <summary>Needs review ({warnings.review.length})</summary>
+                <ul>
+                  {warnings.review.map((warning, index) => (
+                    <li key={`review-${index}`}>{warning}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {warnings.handled.length > 0 && (
+              <details className="note">
+                <summary>Discounts handled automatically ({warnings.handled.length})</summary>
+                <ul>
+                  {warnings.handled.map((warning, index) => (
+                    <li key={`handled-${index}`}>{warning}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </>
         )}
 
         {job !== null && job.kind !== 'running' && job.result.timings.length > 0 && (
@@ -454,4 +520,48 @@ function PhotoPickerButton(props: { disabled: boolean; onPick: (file: File) => v
       }}
     />
   );
+}
+
+
+/**
+ * A chat answer's figures, laid out like the product card.
+ *
+ * Rendered from stored values through React, never as markup: nothing a model produced is
+ * given to the browser as HTML. Colour repeats what each label already says, so the block
+ * reads the same to somebody who cannot see the difference between red and green.
+ */
+function BreakdownBlock({ breakdown }: { breakdown: StoredBreakdown }): JSX.Element {
+  return (
+    <div className="chat-money">
+      <p className="chat-money-title">{breakdown.title}</p>
+      <dl className="money">
+        {breakdown.rows.map((row, index) => (
+          <div key={`${row.label}-${index}`} className={toneClass(row.tone)}>
+            <dt>{row.label}</dt>
+            <dd>{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+      {breakdown.notes?.map((note, index) => (
+        <p key={`note-${index}`} className="chat-money-note">
+          {note}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function toneClass(tone: StoredBreakdownRow['tone']): string {
+  switch (tone) {
+    case 'off':
+      return 'money-off';
+    case 'keep':
+      return 'money-keep';
+    case 'warn':
+      return 'money-warn';
+    case 'strong':
+      return 'money-net';
+    default:
+      return '';
+  }
 }

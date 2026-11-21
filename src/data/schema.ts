@@ -174,11 +174,40 @@ export const MessageRole = {
 } as const;
 export type MessageRole = (typeof MessageRole)[keyof typeof MessageRole];
 
+/**
+ * One row of a figure block in a chat answer.
+ *
+ * Stored as it will be shown rather than as figures to be worked out again: a reply is a record
+ * of what was said at the time, and re-deriving it later from rows that have since been
+ * corrected would quietly rewrite history. The tone carries meaning the colour then repeats -
+ * every row is readable with no colour at all.
+ */
+export interface StoredBreakdownRow {
+  label: string;
+  value: string;
+  /** off = money leaving the case, keep = profit, warn = not established, strong = the figure. */
+  tone?: 'off' | 'keep' | 'warn' | 'strong';
+}
+
+export interface StoredBreakdown {
+  title: string;
+  rows: StoredBreakdownRow[];
+  /** Sentences about what is not known. Shown in amber, and complete without it. */
+  notes?: string[];
+}
+
 export interface StoredMessage {
   id: number;
   orderId: number;
   role: MessageRole;
   text: string;
+  /**
+   * The figures behind the text, laid out.
+   *
+   * Optional and additive: every message saved before this existed simply has none, and reads
+   * exactly as it always did. The text alone is always a complete answer.
+   */
+  breakdowns?: StoredBreakdown[];
   /** A photo the shopkeeper attached to the question. */
   photoId: number | null;
   /** Which items the answer was about, so a follow-up question knows what "it" means. */
