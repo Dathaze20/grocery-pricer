@@ -45,6 +45,12 @@ jobs:
       - name: Browser smoke test
         run: npm run test:browser
 
+      # The product card is where a shopkeeper reads money, and a card can pass every unit test
+      # and still be unusable: a figure cut off, a button too small for a thumb, a cost printed
+      # in the colour that means profit. Driven on a real Android viewport.
+      - name: Product card test
+        run: npm run test:card
+
       # Builds two real versions and serves the second over the first, so the service worker
       # update lifecycle is exercised the way a deployment exercises it. An installed app that
       # cannot update itself is one its owner has to reinstall by hand.

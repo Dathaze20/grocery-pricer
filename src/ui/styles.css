@@ -38,6 +38,21 @@
   --bad: #912819;
   --bad-bg: #fbeae7;
 
+  /*
+   * Colour that means something about money.
+   *
+   * Three jobs and no more: red is money leaving the case, green is money the shop keeps,
+   * amber is something the app does not know yet. Everything else stays ink on paper, because
+   * a colour used for decoration stops being read as a signal - and these have to be read at a
+   * glance, over a receipt, in a shop.
+   *
+   * --money-off is darker than the red used for an error so that a discount - which is good
+   * news - does not shout like a warning, while still clearing 4.5:1 on white.
+   */
+  --money-off: #a3372a;
+  --money-off-bg: #fdf1ef;
+  --money-keep: var(--brand);
+
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
@@ -264,7 +279,24 @@ button:disabled { cursor: default; }
   gap: var(--sp-2);
 }
 
-.row-line .name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/*
+ * A product name may take two lines rather than be cut off.
+ *
+ * It was truncated to one line with an ellipsis, which on a phone turns "DryNite Jumbo Size 6
+ * Nappies Extra Absorbent" into something ending in a dot - and the name is how the shopkeeper
+ * knows which product they are about to price. Two lines, then stop, so a long name cannot
+ * push the money off the bottom of the row either.
+ */
+.row-line .name {
+  font-weight: 650;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
 .row-line .amount { font-weight: 650; font-variant-numeric: tabular-nums; flex: none; }
 
 /* --- hero --------------------------------------------------------------- */
@@ -753,3 +785,129 @@ button.notice { display: block; width: 100%; font: inherit; font-size: 0.9375rem
   justify-content: center;
   color: var(--ink-3, #6b7280);
 }
+
+
+/* --- the money on a product card ---------------------------------------- */
+
+/*
+ * The case price, the flyer money and what is left, written as a subtraction.
+ *
+ * Laid out as rows of label and figure so the figures line up on the right: a column of
+ * amounts can be compared by eye, a paragraph of them cannot. The rule above the net line is
+ * doing the work a rule does on paper - this is the total of what is above it.
+ */
+.money {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: var(--sp-3);
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-line);
+  border-radius: var(--r-md);
+}
+
+.money > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-3);
+}
+
+.money dt {
+  font-size: 0.9375rem;
+  color: var(--ink-2);
+  min-width: 0;
+}
+
+.money dd {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Money leaving the case. */
+.money .money-off dt,
+.money .money-off dd {
+  color: var(--money-off);
+}
+
+/* The figure the shop actually paid: the one every price is worked out from. */
+.money .money-net dt { color: var(--ink); font-weight: 650; }
+.money .money-net dd { font-size: 1.0625rem; }
+
+/* The rule belongs under a subtraction, not above a lone figure. */
+.money .money-off + .money-net {
+  margin-top: var(--sp-1);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--brand-line);
+}
+
+/*
+ * The number that decides a shelf price, so the largest thing in the block - and in ink.
+ *
+ * Green is what the shop keeps. A cost printed in the same green reads as earnings at a
+ * glance, which is the one misreading this card cannot afford.
+ */
+.money .money-each dt { color: var(--ink); font-weight: 650; }
+.money .money-each dd { font-size: 1.25rem; font-weight: 750; color: var(--ink); }
+
+/* Red where an amount is money off, inline in a sentence. */
+.money-off-ink { color: var(--money-off); font-weight: 650; }
+
+/* --- the discount panel -------------------------------------------------- */
+
+.discount-panel { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+.discount-state {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.discount-state.is-none { color: var(--ink-2); font-weight: 600; }
+
+.discount-preview {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--money-off-bg);
+  border-radius: var(--r-md);
+  margin: 0;
+}
+
+/*
+ * The box and its button, each with room to be itself.
+ *
+ * The placeholder was being cut off mid-character - "e.g. 7.0C" - because the box and a button
+ * reading "Off the whole case" were sharing one line with nothing holding the box open. The
+ * box now has a floor it cannot be squeezed below, and on a narrow phone the two stack rather
+ * than shrink.
+ */
+.discount-row { gap: var(--sp-2); flex-wrap: wrap; }
+.discount-row input { flex: 1 1 7rem; min-width: 6.5rem; }
+.discount-row .btn { flex: 0 1 auto; }
+
+@media (max-width: 22rem) {
+  .discount-row input,
+  .discount-row .btn { flex: 1 1 100%; }
+}
+
+/*
+ * Removing a discount is a different kind of action from entering one.
+ *
+ * It used to be a bare line of text reading "There is no discount on this product", sitting
+ * directly under a line saying one was recorded - so the card appeared to contradict itself,
+ * and the only way to find out it was a button was to press it.
+ */
+.btn-remove {
+  background: var(--surface);
+  color: var(--money-off);
+  border: 1px solid #e3c7c2;
+  font-weight: 650;
+}
+
+.btn-remove:active { background: var(--money-off-bg); }
+
+.t-cap.is-warn { color: var(--warn); font-weight: 650; }

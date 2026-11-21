@@ -1,4 +1,4 @@
-import { NameNormalizer, SizeParser, sizeCanonical } from './matching';
+import { NameNormalizer, SizeParser, normalizeUpc, sizeCanonical, upcEquivalent } from './matching';
 import { DiscountScope, scopeFromReceiptText } from './models';
 import { Money } from './money';
 import type { AiDiscountLine, AiExtractedItem, AiOrderExtraction } from './ai-types';
@@ -21,6 +21,21 @@ const TIE_MARGIN = 0.05;
 export interface DiscountAssociation {
   readonly items: readonly AiExtractedItem[];
   readonly warnings: readonly string[];
+  /**
+   * Lines that identify a product but found none here, kept for a second look.
+   *
+   * A receipt is photographed in overlapping pieces and read two photographs at a time, so a
+   * discount can be in one batch and its product in the next. Inside the batch there is nothing
+   * to attach it to and nothing is invented; once every batch has been stitched into one order,
+   * the whole list is there and these get one more try - by barcode and name only, never by a
+   * position that counted rows in a batch that no longer exists.
+   */
+  readonly carried: readonly AiDiscountLine[];
+}
+
+export interface AssociateOptions {
+  /** Whether the model's array position may be used. False once batches have been merged. */
+  readonly allowIndex?: boolean;
 }
 
 /**
@@ -33,12 +48,15 @@ export interface DiscountAssociation {
 export function associateDiscountLines(
   items: readonly AiExtractedItem[],
   lines: readonly AiDiscountLine[] | undefined,
+  options: AssociateOptions = {},
 ): DiscountAssociation {
-  if (lines === undefined || lines.length === 0) return { items, warnings: [] };
+  const allowIndex = options.allowIndex ?? true;
+  if (lines === undefined || lines.length === 0) return { items, warnings: [], carried: [] };
 
   const out = items.map((item) => ({ ...item }));
   const taken = new Set<number>();
   const warnings: string[] = [];
+  const carried: AiDiscountLine[] = [];
 
   // A product that already carries a discount is not a candidate, and its amount is left alone.
   // Read loosely, sign and all: whatever the model attached, that product is spoken for.
@@ -54,8 +72,19 @@ export function associateDiscountLines(
       continue;
     }
 
-    const placement = placeLine(line, out, taken);
+    const placement = placeLine(line, out, taken, allowIndex);
     if (placement.kind !== 'at') {
+      /*
+       * A line with a product to look for, and no product here to find.
+       *
+       * Held back rather than reported, because the order is not whole yet: its product may be
+       * in the next photograph. Only on the second pass, against the finished order, does this
+       * become something to tell the owner about.
+       */
+      if (placement.kind === 'unplaceable' && allowIndex && nameOf(line) !== null) {
+        carried.push(line);
+        continue;
+      }
       const warning = refusalWarning(placement.kind, line, amount);
       if (warning !== null) warnings.push(warning);
       continue;
@@ -80,7 +109,7 @@ export function associateDiscountLines(
     };
   }
 
-  return { items: out, warnings };
+  return { items: out, warnings, carried };
 }
 
 /**
@@ -118,11 +147,22 @@ function placeLine(
   line: AiDiscountLine,
   items: readonly AiExtractedItem[],
   taken: ReadonlySet<number>,
+  allowIndex: boolean,
 ): Placement {
+  /*
+   * A barcode settles it outright.
+   *
+   * It is the one piece of a receipt that identifies a product rather than describing it: two
+   * sizes of one nappy share every word of their name and nothing of their barcode. Where the
+   * model could read the barcode printed with the discount, nothing else needs weighing.
+   */
+  const byBarcode = barcodeMatch(line, items, taken);
+  if (byBarcode !== null) return byBarcode;
+
   const named = nameOf(line);
   const tied = named === null ? [] : topMatches(named, items, taken);
 
-  const index = line.appliesToIndex;
+  const index = allowIndex ? line.appliesToIndex : null;
   const pointed =
     index !== null && index !== undefined && Number.isInteger(index) && index >= 0 && index < items.length
       ? index
@@ -173,11 +213,43 @@ function placeLine(
   return { kind: 'unverified' };
 }
 
-/** The name the line gives, or null when it gives nothing usable. */
+/**
+ * The name evidence on a line: what it says, or the product line copied from above it.
+ *
+ * The receipt mostly prints "FLYER DISCOUNT" and a reference, naming nothing - so asking the
+ * model to copy the product line printed above the discount gives us a name where there was
+ * none, in verbatim printed text rather than a judgement about array positions.
+ */
 function nameOf(line: AiDiscountLine): string | null {
-  const named = line.productName;
-  if (named === null || named === undefined) return null;
-  return NameNormalizer.tokens(named).length === 0 ? null : named;
+  for (const candidate of [line.productName, line.productLineAbove]) {
+    if (candidate === null || candidate === undefined) continue;
+    if (NameNormalizer.tokens(candidate).length > 0) return candidate;
+  }
+  return null;
+}
+
+/**
+ * The row carrying this line's barcode, when exactly one does.
+ *
+ * Two rows with the same barcode are the same product bought twice; the first free one takes
+ * it, as it would by name. A barcode already spoken for is this same money arriving twice.
+ */
+function barcodeMatch(
+  line: AiDiscountLine,
+  items: readonly AiExtractedItem[],
+  taken: ReadonlySet<number>,
+): Placement | null {
+  const code = normalizeUpc(line.upc);
+  if (code === null) return null;
+
+  const carrying: number[] = [];
+  for (let at = 0; at < items.length; at += 1) {
+    if (upcEquivalent(items[at]!.upc, code)) carrying.push(at);
+  }
+  if (carrying.length === 0) return null;
+
+  const free = carrying.find((at) => !taken.has(at));
+  return free === undefined ? { kind: 'duplicate' } : { kind: 'at', at: free };
 }
 
 /** How well a line's name fits one row, by whichever of its two names fits better. */
@@ -370,17 +442,64 @@ function unreadableWarning(line: AiDiscountLine): string {
 /**
  * One batch, with its printed discount lines placed on the products they belong to.
  *
- * Done per batch, before batches are stitched together, because `appliesToIndex` is a position in
- * the array the model returned for those photographs and means nothing once the arrays are
- * concatenated. Anything that could not be placed is added to the batch's own warnings, which is
- * what the owner sees under "what could not be read".
+ * Done per batch, before batches are stitched together, because `appliesToIndex` is a position
+ * in the array the model returned for those photographs and means nothing once the arrays are
+ * concatenated. Anything refused outright is added to the batch's own warnings; anything that
+ * named a product this batch does not contain is handed back to be tried again on the whole
+ * order, because the next photograph may hold it.
  */
-export function attachDiscountLines(extraction: AiOrderExtraction): AiOrderExtraction {
+export function attachDiscountLines(extraction: AiOrderExtraction): {
+  extraction: AiOrderExtraction;
+  carried: readonly AiDiscountLine[];
+} {
   const placed = associateDiscountLines(extraction.items, extraction.discountLines);
-  if (placed.warnings.length === 0 && placed.items === extraction.items) return extraction;
+  if (placed.warnings.length === 0 && placed.carried.length === 0 && placed.items === extraction.items) {
+    return { extraction, carried: [] };
+  }
   return {
-    ...extraction,
+    extraction: {
+      ...extraction,
+      items: placed.items,
+      warnings: [...extraction.warnings, ...placed.warnings],
+    },
+    carried: placed.carried,
+  };
+}
+
+/**
+ * The second look, once every photograph has been stitched into one order.
+ *
+ * By barcode and by name only. A position was a count of rows in a batch that no longer exists,
+ * and using it here would point at whatever product happens to sit at that number in the
+ * finished order - which is how a discount ends up on something nobody bought it for.
+ */
+export function attachCarriedDiscountLines(
+  merged: AiOrderExtraction,
+  carried: readonly AiDiscountLine[],
+): AiOrderExtraction {
+  if (carried.length === 0) return merged;
+
+  // Overlapping photographs show the same discount twice, so the same line arrives twice.
+  const seen = new Set<string>();
+  const once = carried.filter((line) => {
+    const key = [
+      line.amount ?? '',
+      line.productName ?? '',
+      line.productLineAbove ?? '',
+      line.upc ?? '',
+      line.reference ?? '',
+      line.sourceText.join('|'),
+    ].join('~');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  const placed = associateDiscountLines(merged.items, once, { allowIndex: false });
+  return {
+    ...merged,
     items: placed.items,
-    warnings: [...extraction.warnings, ...placed.warnings],
+    // Whatever is still unplaced has had every chance; now it is the owner's to know about.
+    warnings: [...merged.warnings, ...placed.warnings],
   };
 }

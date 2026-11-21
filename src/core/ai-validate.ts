@@ -125,6 +125,33 @@ function validateItem(
     unitsPerCase = item.unitsPerCase;
   }
 
+  /*
+   * A pack count the receipt's own unit price says cannot be right.
+   *
+   * The dangerous misreading is the count printed on the packet being taken for the number of
+   * packets in the case: "DRYNITE JUMBO #6 21CT" holds twenty-one nappies, and four of those
+   * packets make the case. Divide by twenty-one and each packet looks five times cheaper than
+   * it cost, which is a shelf price that loses money on every single sale with nothing on the
+   * screen to show it.
+   *
+   * There is no way to tell those two numbers apart from the text alone - a club pack of four
+   * bottles is honestly "4 CT" with four to sell - so nothing is guessed from the size. But
+   * where the receipt prints its own per-unit figure, it can be compared: a discount or a
+   * rounding moves a unit cost by a fraction, never by a multiple, so a printed figure several
+   * times what the count implies means the count is wrong. Then the owner is asked, which is
+   * one tap on a card that already has the box for it.
+   */
+  if (
+    unitsPerCase !== null &&
+    casePrice !== null &&
+    printedUnitCost !== null &&
+    !printedUnitCost.isZero &&
+    contradictsPackCount(casePrice, unitsPerCase, printedUnitCost)
+  ) {
+    issues.push(ExtractionIssue.MISSING_UNITS_PER_CASE);
+    unitsPerCase = null;
+  }
+
   // A receipt line with no case count means one case, the overwhelmingly common reading.
   let casesPurchased: number;
   if (item.casesPurchased === null || item.casesPurchased === undefined) {
@@ -438,4 +465,28 @@ function combine(first: AiExtractedItem, second: AiExtractedItem): AiExtractedIt
     sourceText: [...new Set([...first.sourceText, ...second.sourceText])],
     confidence: Math.max(first.confidence, second.confidence),
   };
+}
+
+/** How far out a printed unit price has to be before it disproves the pack count. */
+const PACK_COUNT_DISAGREEMENT = 3;
+
+/**
+ * Whether the receipt's own per-unit price disagrees with the pack count by a multiple.
+ *
+ * Both directions, because either can be the misreading: too many packets claimed makes the
+ * implied cost far too low, too few makes it far too high. A factor rather than a percentage,
+ * so that a discount, a rounding or a printed figure that includes something small never fires
+ * it - only a count that is wrong by a whole multiple does.
+ */
+function contradictsPackCount(
+  casePrice: Money,
+  unitsPerCase: number,
+  printedUnitCost: Money,
+): boolean {
+  const implied = casePrice.divideBy(unitsPerCase);
+  if (implied.isZero) return false;
+  return (
+    printedUnitCost.greaterThan(implied.times(PACK_COUNT_DISAGREEMENT)) ||
+    implied.greaterThan(printedUnitCost.times(PACK_COUNT_DISAGREEMENT))
+  );
 }

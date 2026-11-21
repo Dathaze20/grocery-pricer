@@ -52,6 +52,16 @@ export interface AiDiscountLine {
   readonly amount?: string | null;
   /** The product the line names, if it names one. */
   readonly productName?: string | null;
+  /**
+   * The product line printed directly above it, copied verbatim.
+   *
+   * The most useful thing the model can give us about a money-off line, because it is reading
+   * rather than judgement: a copied line says which product the money belongs to without
+   * anybody counting array positions, and it is printed evidence we can check a name against.
+   */
+  readonly productLineAbove?: string | null;
+  /** The barcode printed with that product, if it was visible. The strongest identity there is. */
+  readonly upc?: string | null;
   /** 0-based index into `items`, when the model can tell whose line it is. */
   readonly appliesToIndex?: number | null;
   /** A flyer or promotion number printed with it, kept as evidence rather than used. */
